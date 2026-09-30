@@ -1,5 +1,7 @@
 # Douyin Studio
 
+> [CyberMemoir](https://github.com/CyberMemoir) 项目的一部分；CyberMemoir 是由 [Cogstruct AI](https://github.com/Cogstruct-ai) 开发和维护的开源互联网文化记忆计划。
+
 本地运行的抖音内容探索工作台：**搜索视频 → 发现热点 → 选择下载 → 本地预览**。
 
 React + TypeScript + Express + Playwright。界面和后台在自己的电脑运行，不需要第三方解析服务、付费 API、Java 或 Python。
