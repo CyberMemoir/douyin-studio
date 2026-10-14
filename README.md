@@ -12,6 +12,10 @@ React + TypeScript + Express + Playwright。界面和后台在自己的电脑运
 
 ## 功能
 
+服务器可以在正常账号配置后设置`DOUYIN_HEADLESS=true`。评论首次触发验证/登录提醒会保存`.data/comments-access-pause.json`，后续评论任务在访问平台前失败。只有操作员确认平台问题已处理后才移除此暂停文件；不自动恢复或换身份重试。此次评论扩展与本地离线修复已测试，真实页面选择器与持续服务器采集仍需线上验证。
+
+- **评论脚本采集**：`node --import tsx scripts/collect.ts --kind comments --query 作品数字ID --limit 8 --max-scrolls 0 --output /absolute/path/new-output`。读取当前正常详情页收到的一级评论响应，保留原句、评论ID、可得作者ID、SHA和定位；不读私密数据，不自动生成query或认定衍生。`POST /api/comments`接受videoId、limit和maxScrolls（上限2），仍使用串行任务队列和原登录/验证停止机制。评论DOM入口需线上验证，未找到对应响应明确失败。原始响应仅保存在本地任务与导出，勿提交Git。
+
 - **视频搜索**：关键词、视频 ID、详情 URL，或含短链接的整段分享文案；10 / 20 / 30 / 50 条目标数量。
 - **实时热点**：读取抖音实际返回的热榜，显示获取时间；点击话题搜索相关视频。
 - **结果管理**：真实封面、标题、作者、时长、点赞数；单条/批量下载，JSON 导出。
@@ -131,7 +135,32 @@ server/
   index.ts           本地服务入口
 ```
 
-网站自己完成其请求和会话处理，后台读取正常浏览器页面收到的内容响应，必要时使用 DOM 回退。没有内置私有签名算法，也没有依赖不存在的采集子项目。网页变化时主要调整 `browser.ts` / `normalize.ts`。
+网站自己完成其请求和会话处理，后台读取正常浏览器页面收到的内容响应。关键词搜索仅接受搜索路径且关键词相符的返回，不用通用页面状态或 DOM 推荐卡片补齐结果；详情可读取准确详情页的元数据。没有内置私有签名算法，也没有依赖不存在的采集子项目。网页变化时主要调整 `browser.ts` / `normalize.ts`。
+
+### 脚本采集入口
+
+工作台运行后，每次只提交一个搜索/详情任务并等终态；以下命令不会下载视频：
+
+```bash
+node --import tsx scripts/collect.ts --query "关键词" --limit 8 --output /absolute/path/new-output
+node --import tsx scripts/collect.ts --query "https://www.douyin.com/video/作品数字ID" --output /absolute/path/new-detail
+node --import tsx scripts/collect.ts --job-id "已提交任务ID" --output /absolute/path/new-resume
+node --import tsx scripts/collect.ts --from-job /absolute/path/saved-job.json --output /absolute/path/new-offline
+```
+
+输出父目录须存在，输出目录须为新目录，避免覆盖证据。`--url`指定本机工作台origin；默认等待120秒，`--timeout-ms`最多300000。读取任务使用现有`/api/state`，提交使用JSON与`X-Studio-Client: 1`。请求超时不重提，控制台打印已知job ID；用`--job-id`继续读取。客户端超时不代表服务端任务已结束，不要直接开始下一条。退出码：0完成，2失败/取消/入口错误，3人工验证或访问限制，4客户端等终态超时。
+
+归档`job.json`、`sources.jsonl`、`queries.jsonl`、`candidates.jsonl`及SHA-256清单，删除临时封面/媒体URL。失败任务只归档错误，不造作品或计数。内容归档是规范化公开任务数据，非完整原始HTTP正文；旧材料没有实际观察时点时保持null。
+
+标题不会自动成为人的query或衍生。可通过`--notes notes.json`提供经过语境初审的精确定位：
+
+```json
+[{"id":"作品数字ID","text":"原文连续子串","span":[0,6],"targetIds":[],"relation":"observed_use"}]
+```
+
+`span`是Unicode码点、零起点、半开区间，必须与原句一致；`targetIds`可以为空保留未知关联，`relation`可为`derivative`或`observed_use`。输出始终待审，无人工批准，不更新定义/usage。notes只支持本次取得的标题原句；评论与平台建议尚未采集，不能冒充支持。
+
+研究者输入默认`researcher_seed`，不输出为人的query。复用真实表达或平台线索需`--input-layer real_expression`或`platform_search_clue`，并用`--input-evidence provenance.json`保存原句、URL、定位、上下文及观察时点等出处。平台线索作为搜索入口与新取得的人类原句分开，人的原句允许含梗名。首次验证码、扫码或账号限制立即停止，手动处理后明确授权才恢复。
 
 详细接口见 [API 文档](docs/api.md)，本机访问保护见 [SECURITY.md](SECURITY.md)。
 

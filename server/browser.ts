@@ -1,7 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Page, type Response } from 'playwright';
-import type { Connection, StoredVideo, Trend } from '../shared/types.js';
+import type {
+  Connection,
+  StoredVideo,
+  Trend,
+  CommentCollection,
+  CommentPage,
+  CommentRecord,
+} from '../shared/types.js';
+import { isCommentResponse, parseCommentPage, readCommentBody } from './comments.js';
 import { extractPayload } from './normalize.js';
 import { localCdpUrl, mediaUrl, parseVideoInput } from './validation.js';
 import type { JobContext } from './jobs.js';
@@ -59,7 +67,7 @@ export class DouyinBrowser {
         (process.platform === 'darwin' && fs.existsSync(macChrome) ? macChrome : undefined);
       try {
         this.context = await chromium.launchPersistentContext(profile, {
-          headless: false,
+          headless: process.env.DOUYIN_HEADLESS === 'true',
           ...(executablePath ? { executablePath } : {}),
           viewport: null,
           acceptDownloads: false,
@@ -123,6 +131,7 @@ export class DouyinBrowser {
     try {
       return await action(page);
     } catch (error) {
+      await this.saveFailureDiagnostics(page, job).catch(() => {});
       if (!job.signal.aborted && /人工验证|重新登录/.test(error instanceof Error ? error.message : '')) {
         needsAttention = true;
         if (this.loginPage && this.loginPage !== page) await this.loginPage.close().catch(() => {});
@@ -136,31 +145,95 @@ export class DouyinBrowser {
     }
   }
 
-  private capture(page: Page) {
+  private async saveFailureDiagnostics(page: Page, job: JobContext) {
+    const directory = process.env.DOUYIN_DIAGNOSTICS_DIR;
+    if (!directory || page.isClosed() || job.signal.aborted) return;
+    await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+    const url = new URL(page.url());
+    const snapshot = {
+      observedAt: new Date().toISOString(),
+      url: `${url.origin}${url.pathname}`,
+      title: await page.title().catch(() => ''),
+      visibleText: (
+        await page
+          .locator('body')
+          .innerText({ timeout: 3000 })
+          .catch(() => '')
+      ).slice(0, 30000),
+    };
+    await fs.promises.writeFile(
+      path.join(directory, `${job.job.id}-page.json`),
+      JSON.stringify(snapshot, null, 2),
+      { mode: 0o600 },
+    );
+    await page.screenshot({
+      path: path.join(directory, `${job.job.id}-page.png`),
+      fullPage: false,
+      timeout: 5000,
+    });
+    job.log('已保存本地失败页面诊断（不含请求查询参数或 Cookie）');
+  }
+
+  private capture(page: Page, searchQuery?: string) {
     const videos = new Map<string, StoredVideo>();
     const trends = new Map<string, Trend>();
     const pending = new Set<Promise<void>>();
-    const ingest = (data: unknown) => {
+    const responses: {
+      path: string;
+      status: number;
+      contentType: string;
+      videos?: number;
+      trends?: number;
+      parseError?: boolean;
+    }[] = [];
+    const ingest = (data: unknown, searchContext?: StoredVideo['searchContext']) => {
       const parsed = extractPayload(data);
       for (const v of parsed.videos)
         if (!videos.has(v.id) || v.mediaUrls.length >= videos.get(v.id)!.mediaUrls.length)
-          videos.set(v.id, v);
+          videos.set(v.id, searchContext ? { ...v, searchContext } : v);
       for (const t of parsed.trends) trends.set(t.word, t);
+      return parsed;
     };
     const listener = (response: Response) => {
       const url = new URL(response.url());
       if (
         !(url.hostname === 'douyin.com' || url.hostname.endsWith('.douyin.com')) ||
         !/(aweme|search|hot|trending)/i.test(url.pathname) ||
-        !response.ok()
+        (searchQuery !== undefined && !isKeywordSearchResponse(url.href, searchQuery))
       )
         return;
+      const summary = {
+        path: `${url.origin}${url.pathname}`,
+        status: response.status(),
+        contentType: response.headers()['content-type'] || '',
+      } as (typeof responses)[number];
+      if (responses.length < 100) responses.push(summary);
+      if (!response.ok()) return;
       if (Number(response.headers()['content-length'] || 0) > 12_000_000) return;
       const task = (async () => {
         try {
           const body = await response.body();
-          if (body.length < 12_000_000) ingest(JSON.parse(body.toString('utf8')));
+          if (body.length < 12_000_000) {
+            const payload = JSON.parse(body.toString('utf8'));
+            const pageUrl = new URL(page.url());
+            const responseKeyword = url.searchParams.get('keyword');
+            const searchContext =
+              searchQuery === undefined
+                ? undefined
+                : {
+                    responsePath: `${url.origin}${url.pathname}`,
+                    pagePath: `${pageUrl.origin}${pageUrl.pathname}`,
+                    requestedQuery: searchQuery,
+                    responseKeyword,
+                    keywordMatches: responseKeyword === null ? null : responseKeyword === searchQuery,
+                    observedAt: new Date().toISOString(),
+                  };
+            const parsed = ingest(payload, searchContext);
+            summary.videos = parsed.videos.length;
+            summary.trends = parsed.trends.length;
+          }
         } catch {
+          summary.parseError = true;
           /* Non-JSON and interrupted requests are expected during navigation. */
         }
       })();
@@ -171,8 +244,11 @@ export class DouyinBrowser {
     return {
       videos,
       trends,
+      responses,
       async finish() {
         await Promise.allSettled([...pending]);
+        // Generic application state can include the signed-in account's posts or recommendations.
+        if (searchQuery !== undefined) return;
         const jsonScripts = await page
           .locator('script#RENDER_DATA, script#__NEXT_DATA__, script[type="application/json"]')
           .allTextContents()
@@ -194,24 +270,19 @@ export class DouyinBrowser {
   }
 
   private async blocked(page: Page): Promise<string | null> {
-    const url = page.url();
-    if (/passport|\/login\b/.test(url)) return '抖音要求重新登录，请打开登录窗口完成扫码。';
-    const visible = await page
-      .locator('body')
-      .innerText({ timeout: 3000 })
-      .catch(() => '');
-    if (
-      /请完成下方验证|请完成验证后|拖动滑块完成|请按顺序点击|验证码验证|访问过于频繁|操作频繁/.test(visible)
-    )
-      return '页面需要人工验证或暂时限制访问，请在抖音浏览器中完成处理后重试。';
-    if (/页面不见了|页面不见啦|视频已删除|作品已删除|视频暂时无法查看|该视频已下架/.test(visible))
-      return '视频或页面已不可用，请换一个视频链接。';
-    return null;
+    const [title, visible] = await Promise.all([
+      page.title().catch(() => ''),
+      page
+        .locator('body')
+        .innerText({ timeout: 3000 })
+        .catch(() => ''),
+    ]);
+    return detectDouyinBlock(page.url(), title, visible);
   }
 
   async search(query: string, limit: number, job: JobContext): Promise<StoredVideo[]> {
     return this.page(job, async (page) => {
-      const captured = this.capture(page);
+      const captured = this.capture(page, query);
       try {
         job.log(`搜索“${query}”，等待抖音返回结果`);
         await navigateDouyinPage(
@@ -227,11 +298,19 @@ export class DouyinBrowser {
         }
         await captured.finish();
         const videos = [...captured.videos.values()];
-        if (videos.length < limit) {
-          const dom = await this.domVideos(page);
-          for (const v of dom) if (!videos.some((item) => item.id === v.id)) videos.push(v);
-        }
         if (!videos.length) {
+          if (process.env.DOUYIN_DIAGNOSTICS_DIR) {
+            try {
+              await fs.promises.mkdir(process.env.DOUYIN_DIAGNOSTICS_DIR, { recursive: true, mode: 0o700 });
+              await fs.promises.writeFile(
+                path.join(process.env.DOUYIN_DIAGNOSTICS_DIR, `${job.job.id}-responses.json`),
+                JSON.stringify(captured.responses, null, 2),
+                { mode: 0o600 },
+              );
+            } catch {
+              /* Optional diagnostics must not replace the search failure. */
+            }
+          }
           const status = await this.status();
           throw new Error(
             status.login === 'required'
@@ -244,34 +323,6 @@ export class DouyinBrowser {
       } finally {
         captured.stop();
       }
-    });
-  }
-
-  private async domVideos(page: Page): Promise<StoredVideo[]> {
-    return page.evaluate(() => {
-      const results: StoredVideo[] = [];
-      const seen = new Set<string>();
-      for (const el of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-        const id = el.href.match(/(?:\/video\/|modal_id=)(\d{8,30})/)?.[1];
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        const card = el.closest('li, article, [data-e2e="search-result"]') || el;
-        const image = card.querySelector('img');
-        results.push({
-          id,
-          title: (el.innerText || image?.alt || card.textContent || '未命名视频').trim().slice(0, 500),
-          author: '待解析',
-          url: `https://www.douyin.com/video/${id}`,
-          cover: image?.src || '',
-          duration: 0,
-          likes: null,
-          comments: null,
-          createdAt: null,
-          source: 'page',
-          mediaUrls: [],
-        });
-      }
-      return results;
     });
   }
 
@@ -291,10 +342,7 @@ export class DouyinBrowser {
           if (id && captured.videos.get(id)?.mediaUrls.length) break;
         }
         await captured.finish();
-        const id =
-          page.url().match(/(?:\/(?:video|note)\/|modal_id=)(\d{8,30})/)?.[1] ||
-          url.match(/\/video\/(\d{8,30})/)?.[1];
-        if (!id) throw new Error('分享链接没有跳转到视频详情，请复制完整视频链接重试。');
+        const id = resolveDetailId(url, page.url());
         let video = captured.videos.get(id);
         const media = await page.evaluate(() => {
           const el = document.querySelector('video');
@@ -330,9 +378,118 @@ export class DouyinBrowser {
         job.log(
           video.mediaUrls.length ? '视频信息与可下载地址已解析' : '已解析视频信息；尚未获得可保存的视频流',
         );
-        return video;
+        const requestedPage = new URL(url);
+        return {
+          ...video,
+          detailContext: {
+            requestedUrl: `${requestedPage.origin}${requestedPage.pathname}`,
+            resolvedUrl: `https://www.douyin.com/video/${id}`,
+            observedAt: new Date().toISOString(),
+            observationBasis: 'detail_result_assembly',
+          },
+        };
       } finally {
         captured.stop();
+      }
+    });
+  }
+
+  async comments(
+    videoId: string,
+    limit: number,
+    maxScrolls: number,
+    job: JobContext,
+  ): Promise<CommentCollection> {
+    const pausePath = path.join(this.dataDir, 'comments-access-pause.json');
+    if (fs.existsSync(pausePath)) throw new Error('评论采集已暂停，需要人工处理访问提醒后显式恢复');
+    return this.page(job, async (page) => {
+      const comments = new Map<string, CommentRecord>();
+      const pages: CommentPage[] = [];
+      const pending = new Set<Promise<void>>();
+      let failure: Error | undefined;
+      const listener = (response: Response) => {
+        if (!isCommentResponse(response.url(), videoId)) return;
+        if ([401, 403, 412, 429, 461, 471].includes(response.status())) {
+          failure = new Error(`评论读取需要人工验证（HTTP ${response.status()}），停止访问`);
+          return;
+        }
+        if (pages.length >= maxScrolls + 1 || failure) return;
+        const task = (async () => {
+          try {
+            if (!response.ok()) throw new Error(`评论接口 HTTP ${response.status()}`);
+            const result = parseCommentPage(
+              await readCommentBody(() => response.body()),
+              videoId,
+              new Date().toISOString(),
+            );
+            if (resolveDetailId(`https://www.douyin.com/video/${videoId}`, page.url()) !== videoId)
+              throw new Error('评论页跳转到其他作品');
+            if (!pages.some((entry) => entry.bodySha256 === result.bodySha256)) pages.push(result);
+            for (const comment of result.comments)
+              if (!comments.has(comment.id)) comments.set(comment.id, comment);
+          } catch (error) {
+            failure = error instanceof Error ? error : new Error('评论解析失败');
+          }
+        })();
+        pending.add(task);
+        void task.finally(() => pending.delete(task));
+      };
+      page.on('response', listener);
+      try {
+        await navigateDouyinPage(page, `https://www.douyin.com/video/${videoId}`);
+        await delay(1500, job.signal);
+        const block = await this.blocked(page);
+        if (block) throw new Error(block);
+        if (failure) throw failure;
+        const trigger = page.locator('[data-e2e="comment-icon"]').first();
+        if (await trigger.isVisible().catch(() => false)) await trigger.click();
+        for (let scroll = 0; scroll <= maxScrolls; scroll++) {
+          await delay(1500, job.signal);
+          await Promise.all([...pending]);
+          const block = await this.blocked(page);
+          if (block) throw new Error(block);
+          if (failure) throw failure;
+          if (pages.length && (!pages.at(-1)!.hasMore || comments.size >= limit)) {
+            return {
+              videoId,
+              comments: [...comments.values()].slice(0, limit),
+              pages,
+              endReason: !pages.at(-1)!.hasMore ? 'entry_exhausted' : 'limit',
+              coverage: 'bounded_top_level_comments',
+            };
+          }
+          if (scroll === maxScrolls) break;
+          const container = page.locator('[data-e2e="comment-list"]').first();
+          if (!(await container.isVisible().catch(() => false))) break;
+          // Scroll only the comment list, never use a private API or change identity.
+          await delay(20_000, job.signal);
+          const blockBeforeScroll = await this.blocked(page);
+          if (blockBeforeScroll) throw new Error(blockBeforeScroll);
+          if (failure) throw failure;
+          await container.hover();
+          await page.mouse.wheel(0, 1000);
+        }
+        if (!pages.length) throw new Error('未读到本作品评论响应；页面结构或访问条件尚未支持');
+        return {
+          videoId,
+          comments: [...comments.values()].slice(0, limit),
+          pages,
+          endReason: maxScrolls ? 'no_new_page' : 'scroll_budget',
+          coverage: 'bounded_top_level_comments',
+        };
+      } catch (error) {
+        if (/人工验证|重新登录/.test(error instanceof Error ? error.message : '')) {
+          await fs.promises.mkdir(this.dataDir, { recursive: true });
+          await fs.promises.writeFile(
+            pausePath,
+            JSON.stringify({ pausedAt: new Date().toISOString(), reason: 'access_restriction' }),
+            { mode: 0o600 },
+          );
+        }
+        throw error;
+      } finally {
+        page.off('response', listener);
+        await Promise.all([...pending]);
       }
     });
   }
@@ -394,6 +551,38 @@ export class DouyinBrowser {
     this.context = undefined;
     this.browser = undefined;
   }
+}
+
+export function resolveDetailId(requestedUrl: string, resolvedUrl: string): string {
+  const requested = parseVideoInput(requestedUrl)?.match(/\/video\/(\d{8,30})$/)?.[1];
+  const resolved = parseVideoInput(resolvedUrl)?.match(/\/video\/(\d{8,30})$/)?.[1];
+  if (!resolved) throw new Error('分享链接没有跳转到视频详情，请复制完整视频链接重试。');
+  if (requested && requested !== resolved)
+    throw new Error('详情页作品 ID 与请求不一致，停止关联；请检查原链接。');
+  return resolved;
+}
+
+export function isKeywordSearchResponse(value: string, query: string): boolean {
+  const url = new URL(value);
+  if (url.hostname !== 'douyin.com' && !url.hostname.endsWith('.douyin.com')) return false;
+  if (!/\/search(?:\/|$)/i.test(url.pathname)) return false;
+  const keyword = url.searchParams.get('keyword');
+  return keyword === null || keyword === query;
+}
+
+export function detectDouyinBlock(url: string, title: string, visible: string): string | null {
+  if (/passport|\/login\b/.test(url)) return '抖音要求重新登录，请打开登录窗口完成扫码。';
+  // Some platform verification screens render in an iframe, leaving the top-level body blank.
+  if (
+    /^(验证码中间页|安全验证|验证中心|验证页面)$/.test(title.trim()) ||
+    /请完成下方验证|请完成验证后|拖动滑块完成|请按顺序点击|验证码验证|点击两个形状相同的物体|访问过于频繁|操作频繁/.test(
+      visible,
+    )
+  )
+    return '页面需要人工验证或暂时限制访问，请在抖音浏览器中完成处理后重试。';
+  if (/页面不见了|页面不见啦|视频已删除|作品已删除|视频暂时无法查看|该视频已下架/.test(visible))
+    return '视频或页面已不可用，请换一个视频链接。';
+  return null;
 }
 
 export async function navigateDouyinPage(page: Page, url: string): Promise<void> {

@@ -12,6 +12,12 @@ export const downloadSchema = z.object({
     .max(30),
 });
 
+export const commentsSchema = z.object({
+  videoId: z.string().regex(/^\d{8,30}$/),
+  limit: z.number().int().min(1).max(100).default(20),
+  maxScrolls: z.number().int().min(0).max(2).default(0),
+});
+
 export function parseVideoInput(value: string): string | null {
   const text = value.trim();
   if (/^\d{8,30}$/.test(text)) return `https://www.douyin.com/video/${text}`;

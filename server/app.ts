@@ -5,7 +5,7 @@ import { publicVideo, type Connection } from '../shared/types.js';
 import { DouyinBrowser } from './browser.js';
 import { JobQueue } from './jobs.js';
 import { Store } from './store.js';
-import { searchSchema, downloadSchema, parseVideoInput, localFile } from './validation.js';
+import { searchSchema, downloadSchema, commentsSchema, parseVideoInput, localFile } from './validation.js';
 import { saveVideo } from './download.js';
 
 export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue) {
@@ -29,6 +29,10 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
       res.setHeader('Cache-Control', 'no-store');
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers['x-studio-client'] !== '1') {
         res.status(403).json({ error: '缺少本机请求标记' });
+        return;
+      }
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !req.is('application/json')) {
+        res.status(415).json({ error: '本机修改请求必须使用 application/json' });
         return;
       }
     }
@@ -122,6 +126,14 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
       store.trendsAt = new Date().toISOString();
       store.changed();
       ctx.update({ result: { trends, fetchedAt: store.trendsAt } });
+    });
+    res.status(202).json(job);
+  });
+  app.post('/api/comments', (req, res) => {
+    const { videoId, limit, maxScrolls } = commentsSchema.parse(req.body);
+    const job = queue.enqueue('comments', `读取作品评论：${videoId}`, async (ctx) => {
+      const commentCollection = await browser.comments(videoId, limit, maxScrolls, ctx);
+      ctx.update({ result: { commentCollection, fetchedAt: new Date().toISOString() } });
     });
     res.status(202).json(job);
   });
