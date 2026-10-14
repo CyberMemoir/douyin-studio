@@ -4,6 +4,7 @@ import { z } from 'zod';
 export const searchSchema = z.object({
   query: z.string().trim().min(1).max(400),
   limit: z.number().int().min(1).max(50).default(20),
+  maxScrolls: z.number().int().min(0).max(2).default(2),
 });
 export const downloadSchema = z.object({
   ids: z

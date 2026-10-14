@@ -34,6 +34,7 @@ export class DouyinBrowser {
   private browser?: Browser;
   private context?: BrowserContext;
   private loginPage?: Page;
+  private accessPaused = false;
   constructor(private dataDir: string) {}
 
   private async connect(): Promise<BrowserContext> {
@@ -118,6 +119,8 @@ export class DouyinBrowser {
 
   private async page<T>(job: JobContext, action: (page: Page) => Promise<T>): Promise<T> {
     job.signal.throwIfAborted();
+    if (this.accessPaused || fs.existsSync(path.join(this.dataDir, 'comments-access-pause.json')))
+      throw new Error('读取已暂停，需要人工处理访问提醒后显式恢复');
     job.log('连接本地自动化浏览器');
     const context = await this.connect();
     job.signal.throwIfAborted();
@@ -133,6 +136,7 @@ export class DouyinBrowser {
     } catch (error) {
       await this.saveFailureDiagnostics(page, job).catch(() => {});
       if (!job.signal.aborted && /人工验证|重新登录/.test(error instanceof Error ? error.message : '')) {
+        this.persistAccessPause();
         needsAttention = true;
         if (this.loginPage && this.loginPage !== page) await this.loginPage.close().catch(() => {});
         this.loginPage = page;
@@ -142,6 +146,31 @@ export class DouyinBrowser {
     } finally {
       job.signal.removeEventListener('abort', abort);
       if (!needsAttention) await page.close().catch(() => {});
+    }
+  }
+
+  private persistAccessPause() {
+    this.accessPaused = true;
+    fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    const file = path.join(this.dataDir, 'comments-access-pause.json');
+    const descriptor = fs.openSync(`${file}.tmp`, 'w', 0o600);
+    try {
+      fs.writeFileSync(
+        descriptor,
+        JSON.stringify({ pausedAt: new Date().toISOString(), reason: 'access_restriction' }),
+      );
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(`${file}.tmp`, file);
+    if (process.platform !== 'win32') {
+      const directory = fs.openSync(this.dataDir, 'r');
+      try {
+        fs.fsyncSync(directory);
+      } finally {
+        fs.closeSync(directory);
+      }
     }
   }
 
@@ -175,6 +204,7 @@ export class DouyinBrowser {
   }
 
   private capture(page: Page, searchQuery?: string) {
+    let restriction: Error | undefined;
     const videos = new Map<string, StoredVideo>();
     const trends = new Map<string, Trend>();
     const pending = new Set<Promise<void>>();
@@ -208,11 +238,20 @@ export class DouyinBrowser {
         contentType: response.headers()['content-type'] || '',
       } as (typeof responses)[number];
       if (responses.length < 100) responses.push(summary);
+      if ([401, 403, 412, 429, 461, 471].includes(response.status())) {
+        restriction = new Error(`读取需要人工验证（HTTP ${response.status()}），停止访问`);
+        try {
+          this.persistAccessPause();
+        } catch {
+          restriction = new Error('人工验证暂停记录写入失败；停止读取并检查磁盘');
+        }
+        return;
+      }
       if (!response.ok()) return;
       if (Number(response.headers()['content-length'] || 0) > 12_000_000) return;
       const task = (async () => {
         try {
-          const body = await response.body();
+          const body = await readCommentBody(() => response.body());
           if (body.length < 12_000_000) {
             const payload = JSON.parse(body.toString('utf8'));
             const pageUrl = new URL(page.url());
@@ -245,8 +284,12 @@ export class DouyinBrowser {
       videos,
       trends,
       responses,
+      check() {
+        if (restriction) throw restriction;
+      },
       async finish() {
         await Promise.allSettled([...pending]);
+        if (restriction) throw restriction;
         // Generic application state can include the signed-in account's posts or recommendations.
         if (searchQuery !== undefined) return;
         const jsonScripts = await page
@@ -280,7 +323,7 @@ export class DouyinBrowser {
     return detectDouyinBlock(page.url(), title, visible);
   }
 
-  async search(query: string, limit: number, job: JobContext): Promise<StoredVideo[]> {
+  async search(query: string, limit: number, job: JobContext, maxScrolls = 2): Promise<StoredVideo[]> {
     return this.page(job, async (page) => {
       const captured = this.capture(page, query);
       try {
@@ -289,11 +332,16 @@ export class DouyinBrowser {
           page,
           `https://www.douyin.com/search/${encodeURIComponent(query)}?type=video`,
         );
-        for (let round = 0; round < 7; round++) {
-          await delay(round === 0 ? 6500 : 1300, job.signal);
+        for (let round = 0; round <= maxScrolls; round++) {
+          await delay(round === 0 ? 6500 : 1500, job.signal);
+          captured.check();
           const block = await this.blocked(page);
           if (block) throw new Error(block);
-          if (captured.videos.size >= limit) break;
+          if (captured.videos.size >= limit || round === maxScrolls) break;
+          await delay(20_000, job.signal);
+          captured.check();
+          const blockBeforeScroll = await this.blocked(page);
+          if (blockBeforeScroll) throw new Error(blockBeforeScroll);
           await page.mouse.wheel(0, 900);
         }
         await captured.finish();
@@ -336,6 +384,7 @@ export class DouyinBrowser {
         await navigateDouyinPage(page, url);
         for (let i = 0; i < 5; i++) {
           await delay(i === 0 ? 4000 : 1500, job.signal);
+          captured.check();
           const block = await this.blocked(page);
           if (block) throw new Error(block);
           const id = page.url().match(/(?:\/video\/|modal_id=)(\d{8,30})/)?.[1];
@@ -400,8 +449,6 @@ export class DouyinBrowser {
     maxScrolls: number,
     job: JobContext,
   ): Promise<CommentCollection> {
-    const pausePath = path.join(this.dataDir, 'comments-access-pause.json');
-    if (fs.existsSync(pausePath)) throw new Error('评论采集已暂停，需要人工处理访问提醒后显式恢复');
     return this.page(job, async (page) => {
       const comments = new Map<string, CommentRecord>();
       const pages: CommentPage[] = [];
@@ -477,16 +524,6 @@ export class DouyinBrowser {
           endReason: maxScrolls ? 'no_new_page' : 'scroll_budget',
           coverage: 'bounded_top_level_comments',
         };
-      } catch (error) {
-        if (/人工验证|重新登录/.test(error instanceof Error ? error.message : '')) {
-          await fs.promises.mkdir(this.dataDir, { recursive: true });
-          await fs.promises.writeFile(
-            pausePath,
-            JSON.stringify({ pausedAt: new Date().toISOString(), reason: 'access_restriction' }),
-            { mode: 0o600 },
-          );
-        }
-        throw error;
       } finally {
         page.off('response', listener);
         await Promise.all([...pending]);
@@ -501,6 +538,7 @@ export class DouyinBrowser {
         job.log('打开抖音，获取当前热榜');
         await navigateDouyinPage(page, HOME);
         await delay(6000, job.signal);
+        captured.check();
         if (!captured.trends.size) {
           const hot = page.getByText('热榜', { exact: true }).first();
           if (await hot.isVisible().catch(() => false)) await hot.click().catch(() => {});

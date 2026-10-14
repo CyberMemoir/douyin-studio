@@ -65,11 +65,30 @@ test('API rejects cross-origin requests, validates input and never exposes media
     );
     const commentTask = await fetch(`${base}/comments`, {
       method: 'POST',
-      headers,
+      headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
       body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 0 }),
     });
     assert.equal(commentTask.status, 202);
+    const accepted = await commentTask.json();
+    const duplicate = await fetch(`${base}/comments`, {
+      method: 'POST',
+      headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
+      body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 0 }),
+    });
+    assert.equal((await duplicate.json()).id, accepted.id);
     await queue.idle();
+    assert.equal((await (await fetch(`${base}/receipts/${'c'.repeat(64)}`)).json()).id, accepted.id);
+    assert.equal((await (await fetch(`${base}/jobs/${accepted.id}`)).json()).status, 'completed');
+    assert.equal(
+      (
+        await fetch(`${base}/comments`, {
+          method: 'POST',
+          headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
+          body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 1 }),
+        })
+      ).status,
+      409,
+    );
     assert.equal(store.jobs[0].result?.commentCollection?.videoId, '1234567890123456789');
     assert.equal(
       (

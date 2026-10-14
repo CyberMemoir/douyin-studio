@@ -12,7 +12,9 @@ React + TypeScript + Express + Playwright。界面和后台在自己的电脑运
 
 ## 功能
 
-服务器可以在正常账号配置后设置`DOUYIN_HEADLESS=true`。评论首次触发验证/登录提醒会保存`.data/comments-access-pause.json`，后续评论任务在访问平台前失败。只有操作员确认平台问题已处理后才移除此暂停文件；不自动恢复或换身份重试。此次评论扩展与本地离线修复已测试，真实页面选择器与持续服务器采集仍需线上验证。
+常驻服务器接入见 [生产采集接口](docs/server-collection.md)：持久提交回执、重启恢复、共享访问暂停及有界搜索。需要与 CyberMemoir 的独立队列服务一起部署，真实 Linux/账号连续运行仍待验收。
+
+服务器可以在正常账号配置后设置`DOUYIN_HEADLESS=true`。读取触发验证/登录提醒会保存`.data/comments-access-pause.json`，后续搜索、详情、热榜、评论均在访问平台前停止。操作员先处理平台问题、保存旧暂停记录，再移除标记并重启工作台；不自动恢复或换身份重试。此次离线修复已测试，真实页面选择器与持续服务器采集仍需线上验证。
 
 - **评论脚本采集**：`node --import tsx scripts/collect.ts --kind comments --query 作品数字ID --limit 8 --max-scrolls 0 --output /absolute/path/new-output`。读取当前正常详情页收到的一级评论响应，保留原句、评论ID、可得作者ID、SHA和定位；不读私密数据，不自动生成query或认定衍生。`POST /api/comments`接受videoId、limit和maxScrolls（上限2），仍使用串行任务队列和原登录/验证停止机制。评论DOM入口需线上验证，未找到对应响应明确失败。原始响应仅保存在本地任务与导出，勿提交Git。
 
@@ -155,7 +157,7 @@ node --import tsx scripts/collect.ts --from-job /absolute/path/saved-job.json --
 标题不会自动成为人的query或衍生。可通过`--notes notes.json`提供经过语境初审的精确定位：
 
 ```json
-[{"id":"作品数字ID","text":"原文连续子串","span":[0,6],"targetIds":[],"relation":"observed_use"}]
+[{ "id": "作品数字ID", "text": "原文连续子串", "span": [0, 6], "targetIds": [], "relation": "observed_use" }]
 ```
 
 `span`是Unicode码点、零起点、半开区间，必须与原句一致；`targetIds`可以为空保留未知关联，`relation`可为`derivative`或`observed_use`。输出始终待审，无人工批准，不更新定义/usage。notes只支持本次取得的标题原句；评论与平台建议尚未采集，不能冒充支持。

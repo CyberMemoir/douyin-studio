@@ -43,7 +43,9 @@ export class JobQueue {
     this.controllers.set(job.id, controller);
     this.waiting.push({ job, work, controller });
     this.store.changed();
-    queueMicrotask(() => void this.drain());
+    queueMicrotask(
+      () => void this.drain().catch(() => console.error('Job queue stopped: durable state write failed')),
+    );
     return job;
   }
   cancel(id: string): boolean {
@@ -86,9 +88,12 @@ export class JobQueue {
         };
         update({ status: 'running', phase: '开始执行' });
         try {
+          // Commit acceptance/receipts before browser work. A lost HTTP response cannot duplicate a keyed job.
+          await this.store.flush();
           await work({ job, signal: controller.signal, log, update });
           controller.signal.throwIfAborted();
           update({ status: 'completed', progress: 100, phase: '已完成' });
+          await this.store.flush();
         } catch (error) {
           const cancelled = controller.signal.aborted;
           const message = error instanceof Error ? error.message : '任务执行失败';
@@ -98,6 +103,7 @@ export class JobQueue {
             phase: cancelled ? '已取消' : '执行失败',
             error: cancelled ? undefined : message,
           });
+          await this.store.flush();
         } finally {
           this.controllers.delete(job.id);
         }

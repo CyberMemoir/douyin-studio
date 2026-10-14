@@ -65,6 +65,7 @@ export type JobType = 'search' | 'resolve' | 'trends' | 'comments' | 'download' 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type Job = {
   id: string;
+  idempotencyKey?: string;
   type: JobType;
   status: JobStatus;
   title: string;
