@@ -1,4 +1,4 @@
-# 服务器文本采集接口
+# 服务器采集与媒体证据接口
 
 常驻采集由 CyberMemoir [独立采集服务](https://github.com/CyberMemoir/cyber-memoir/tree/codex/bilibili-text-collector-20261014/apps/collector) 调度；工作台仅在同机 `127.0.0.1:4321` 提供串行浏览器任务。正常配置账号后可使用 `DOUYIN_HEADLESS=true`，不用 AI 调度、LLM、OCR/ASR 或全视频理解。
 
@@ -13,4 +13,12 @@
 共享服务负责发现热词后有界搜索视频、可选自动派发评论、跨窗口去重、磁盘预算和告警。热词不是实际人的搜索日志，标题/评论是观察表达，原研究者输入另存。单次 `scripts/collect.ts` 保留原有有界工作流，常驻队列不要与 UI 的大量手动任务混用。
 
 离线测试验证回执重放、重启恢复、冲突拒绝和原有页面解析；真实账号、Linux 常驻浏览器、连续窗口和监控通知仍待服务器验收。
+
+## 可选媒体证据描述
+
+中央服务先用原有 keyed `/api/search` 解析一个规范视频 URL，再用完成任务的 `GET /api/jobs/:id/source-media` 取得 `schemaVersion: 1`、videoId、canonicalUrl、observedAt、durationSeconds、mediaUrls、subtitleTracks 和 subtitleCoverage。媒体地址只取带请求视频 ID 的结构化记录；通用 DOM video 元素的 UI fallback 不进入证据下载。描述只在成功 resolve 任务上可用；缺失、未完成或已淘汰返回 409，不新建任务。描述随 state 持久保存并随瞬时任务淘汰，不从后续更新的视频缓存猜回旧任务结果。
+
+`subtitleTracks` 只来自详情页面正常提供的 `video track[src]`；`page_tracks_only` 不代表全平台字幕覆盖。没有 OCR/ASR、模型 fallback 或猜测地址。临时媒体/字幕直链只通过该同机端点提供给中央归档，不进入普通 `/api/state`、事件快照、任务、回执和搜索导出。state.json 仍是私有文件。
+
+中央 `collect_media` 默认关闭；启用后由中央按数量/字节/请求预算获取直链 MP4 与现成字幕、保存哈希和时间定位。工作台不自动下载新文件、不合并/解密分段、不生成梗定义或关系。现有 UI 下载功能保持独立，常驻采集不要与同账号的大量手动操作混跑。离线 API/重启/隐私测试不等同真实媒体可取得或可播放验收。
 

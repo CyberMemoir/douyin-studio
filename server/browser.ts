@@ -393,6 +393,9 @@ export class DouyinBrowser {
         await captured.finish();
         const id = resolveDetailId(url, page.url());
         let video = captured.videos.get(id);
+        // Evidence downloads use only URLs inside a record with the requested
+        // stable video ID. A generic DOM video element remains a UI fallback.
+        const sourceMediaUrls = [...(video?.mediaUrls || [])];
         const media = await page.evaluate(() => {
           const el = document.querySelector('video');
           return {
@@ -400,6 +403,14 @@ export class DouyinBrowser {
             duration: el && Number.isFinite(el.duration) ? el.duration : 0,
             poster: el?.poster || '',
             title: document.title,
+            subtitleTracks: Array.from(document.querySelectorAll<HTMLTrackElement>('video track[src]'))
+              .slice(0, 5)
+              .map((track) => ({
+                url: track.src,
+                language: track.srclang || '',
+                label: track.label || '',
+                kind: track.kind || '',
+              })),
           };
         });
         if (!video)
@@ -428,8 +439,12 @@ export class DouyinBrowser {
           video.mediaUrls.length ? '视频信息与可下载地址已解析' : '已解析视频信息；尚未获得可保存的视频流',
         );
         const requestedPage = new URL(url);
+        if (resolveDetailId(url, page.url()) !== id)
+          throw new Error('详情页在读取期间跳转到其他作品，停止关联');
         return {
           ...video,
+          sourceMediaUrls,
+          subtitleTracks: media.subtitleTracks || [],
           detailContext: {
             requestedUrl: `${requestedPage.origin}${requestedPage.pathname}`,
             resolvedUrl: `https://www.douyin.com/video/${id}`,

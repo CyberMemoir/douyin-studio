@@ -107,6 +107,19 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
           ? [await browser.resolve(url, ctx)]
           : await browser.search(query, limit, ctx, maxScrolls);
         store.addVideos(videos);
+        if (url && videos.length === 1) {
+          const video = videos[0];
+          store.sourceMedia.set(ctx.job.id, {
+            schemaVersion: 1,
+            videoId: video.id,
+            canonicalUrl: `https://www.douyin.com/video/${video.id}`,
+            observedAt: new Date().toISOString(),
+            durationSeconds: video.duration,
+            mediaUrls: [...(video.sourceMediaUrls || [])],
+            subtitleTracks: [...(video.subtitleTracks || [])],
+            subtitleCoverage: 'page_tracks_only',
+          });
+        }
         ctx.update({ result: { videos: videos.map(publicVideo), fetchedAt: new Date().toISOString() } });
         // A late status check must not turn a successfully collected result into a failure.
         const connection = await browser.status().catch(() => null);
@@ -210,6 +223,24 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
     }
     await store.flush();
     res.json(job);
+  });
+  app.get('/api/jobs/:id/source-media', async (req, res) => {
+    const job = store.jobs.find((entry) => entry.id === req.params.id);
+    const media = store.sourceMedia.get(String(req.params.id));
+    if (
+      !job ||
+      job.status !== 'completed' ||
+      job.type !== 'resolve' ||
+      !media ||
+      job.result?.videos?.[0]?.id !== media.videoId
+    ) {
+      res.status(409).json({
+        error: 'Source media descriptor unavailable; inspect the original job without resubmitting',
+      });
+      return;
+    }
+    await store.flush();
+    res.json(media);
   });
   app.get('/api/receipts/:key', async (req, res) => {
     const receipt = store.receipts.get(String(req.params.key));

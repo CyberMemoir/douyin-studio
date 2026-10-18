@@ -39,6 +39,7 @@ export class JobQueue {
         .map((j) => j.id),
     );
     this.store.jobs = this.store.jobs.filter((j) => !evict.has(j.id));
+    for (const id of evict) this.store.sourceMedia.delete(id);
     const controller = new AbortController();
     this.controllers.set(job.id, controller);
     this.waiting.push({ job, work, controller });

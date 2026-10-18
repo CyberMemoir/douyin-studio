@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { Job, Snapshot, StoredVideo } from '../shared/types.js';
+import type { Job, Snapshot, StoredVideo, SourceMedia } from '../shared/types.js';
 
 export class Store extends EventEmitter {
   jobs: Job[] = [];
@@ -9,6 +9,7 @@ export class Store extends EventEmitter {
   trends: Snapshot['trends'] = [];
   trendsAt: string | null = null;
   receipts = new Map<string, { hash: string; jobId: string }>();
+  sourceMedia = new Map<string, SourceMedia>();
   connection: Snapshot['connection'] = {
     connected: false,
     login: 'unknown',
@@ -35,6 +36,7 @@ export class Store extends EventEmitter {
       this.trends = data.trends || [];
       this.trendsAt = data.trendsAt || null;
       this.receipts = new Map(Object.entries(data.receipts || {}));
+      this.sourceMedia = new Map(Object.entries(data.sourceMedia || {}));
       for (const job of this.jobs)
         if (job.status === 'running' || job.status === 'queued') {
           job.status = 'failed';
@@ -72,6 +74,7 @@ export class Store extends EventEmitter {
       trends: this.trends,
       trendsAt: this.trendsAt,
       receipts: Object.fromEntries(this.receipts),
+      sourceMedia: Object.fromEntries(this.sourceMedia),
     });
     const file = path.join(this.root, 'state.json');
     this.writes = this.writes

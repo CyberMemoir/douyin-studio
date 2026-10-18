@@ -25,7 +25,22 @@ export type Video = {
   };
 };
 
-export type StoredVideo = Video & { mediaUrls: string[] };
+export type SubtitleTrack = { url: string; language: string; label: string; kind: string };
+export type SourceMedia = {
+  schemaVersion: 1;
+  videoId: string;
+  canonicalUrl: string;
+  observedAt: string;
+  durationSeconds: number;
+  mediaUrls: string[];
+  subtitleTracks: SubtitleTrack[];
+  subtitleCoverage: 'page_tracks_only';
+};
+export type StoredVideo = Video & {
+  mediaUrls: string[];
+  sourceMediaUrls?: string[];
+  subtitleTracks?: SubtitleTrack[];
+};
 export type Trend = { word: string; rank: number; heat: number | null; label: string };
 export type Connection = {
   connected: boolean;
@@ -91,6 +106,6 @@ export type Job = {
 export type Snapshot = { jobs: Job[]; trends: Trend[]; trendsAt: string | null; connection: Connection };
 
 export function publicVideo(video: StoredVideo): Video {
-  const { mediaUrls: _private, ...result } = video;
+  const { mediaUrls: _private, sourceMediaUrls: _sourcePrivate, subtitleTracks: _tracks, ...result } = video;
   return result;
 }
