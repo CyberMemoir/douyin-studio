@@ -131,6 +131,32 @@ test('normal browser comment collection binds pages and persists access pauses',
     const result = await browser.comments(id, 8, 0, job);
     assert.equal(result.comments[0].text, '合成评论原句');
     assert.equal(result.endReason, 'entry_exhausted');
+    const finalPageBody = Buffer.from(
+      JSON.stringify({
+        status_code: 0,
+        has_more: 0,
+        comments: [1, 2, 3].map((cid) => ({ cid: String(cid), aweme_id: id, text: `comment ${cid}` })),
+      }),
+    );
+    // Use the real browser response listener; no platform or CDP connection is made.
+    page.goto = async () => {
+      listener({
+        url: () => `https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=${id}`,
+        status: () => (restricted ? 403 : 200),
+        ok: () => !restricted,
+        body: async () => finalPageBody,
+      });
+    };
+    for (const [limit, expected] of [
+      [1, 'limit'],
+      [3, 'entry_exhausted'],
+      [5, 'entry_exhausted'],
+    ] as const) {
+      const finalPage = await browser.comments(id, limit, 0, job);
+      assert.equal(finalPage.comments.length, Math.min(limit, 3));
+      assert.equal(finalPage.pages[0].comments.length, 3);
+      assert.equal(finalPage.endReason, expected);
+    }
     restricted = true;
     await assert.rejects(browser.comments(id, 8, 0, job), /人工验证/);
     const count = navigations;

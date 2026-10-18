@@ -501,7 +501,7 @@ export class DouyinBrowser {
               videoId,
               comments: [...comments.values()].slice(0, limit),
               pages,
-              endReason: !pages.at(-1)!.hasMore ? 'entry_exhausted' : 'limit',
+              endReason: !pages.at(-1)!.hasMore && comments.size <= limit ? 'entry_exhausted' : 'limit',
               coverage: 'bounded_top_level_comments',
             };
           }
