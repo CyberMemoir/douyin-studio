@@ -5,8 +5,9 @@ import { publicVideo, type Connection } from '../shared/types.js';
 import { DouyinBrowser } from './browser.js';
 import { JobQueue } from './jobs.js';
 import { Store } from './store.js';
-import { searchSchema, downloadSchema, parseVideoInput, localFile } from './validation.js';
+import { searchSchema, downloadSchema, commentsSchema, parseVideoInput, localFile } from './validation.js';
 import { saveVideo } from './download.js';
+import { keyedJob, RequestConflict } from './idempotency.js';
 
 export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue) {
   const app = express();
@@ -29,6 +30,10 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
       res.setHeader('Cache-Control', 'no-store');
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers['x-studio-client'] !== '1') {
         res.status(403).json({ error: '缺少本机请求标记' });
+        return;
+      }
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !req.is('application/json')) {
+        res.status(415).json({ error: '本机修改请求必须使用 application/json' });
         return;
       }
     }
@@ -93,36 +98,65 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
       res.status(202).json(job);
     });
   }
-  app.post('/api/search', (req, res) => {
-    const { query, limit } = searchSchema.parse(req.body);
+  app.post('/api/search', async (req, res) => {
+    const { query, limit, maxScrolls } = searchSchema.parse(req.body);
     const url = parseVideoInput(query);
-    const job = queue.enqueue(
-      url ? 'resolve' : 'search',
-      url ? '解析视频链接' : `搜索：${query}`,
-      async (ctx) => {
-        const videos = url ? [await browser.resolve(url, ctx)] : await browser.search(query, limit, ctx);
+    const job = keyedJob(store, req.get('Idempotency-Key'), 'search', { query, limit, maxScrolls }, () =>
+      queue.enqueue(url ? 'resolve' : 'search', url ? '解析视频链接' : `搜索：${query}`, async (ctx) => {
+        const videos = url
+          ? [await browser.resolve(url, ctx)]
+          : await browser.search(query, limit, ctx, maxScrolls);
         store.addVideos(videos);
+        if (url && videos.length === 1) {
+          const video = videos[0];
+          store.sourceMedia.set(ctx.job.id, {
+            schemaVersion: 1,
+            videoId: video.id,
+            canonicalUrl: `https://www.douyin.com/video/${video.id}`,
+            observedAt: new Date().toISOString(),
+            durationSeconds: video.duration,
+            mediaUrls: [...(video.sourceMediaUrls || [])],
+            subtitleTracks: [...(video.subtitleTracks || [])],
+            subtitleCoverage: 'page_tracks_only',
+          });
+        }
         ctx.update({ result: { videos: videos.map(publicVideo), fetchedAt: new Date().toISOString() } });
         // A late status check must not turn a successfully collected result into a failure.
         const connection = await browser.status().catch(() => null);
         if (connection) setConnection(connection);
-      },
+      }),
     );
+    await store.flush();
     res.status(202).json(job);
   });
-  app.post('/api/trends', (_req, res) => {
+  app.post('/api/trends', async (req, res) => {
     const existing = store.jobs.find((j) => j.type === 'trends' && ['queued', 'running'].includes(j.status));
-    if (existing) {
+    if (existing && !req.get('Idempotency-Key')) {
+      await store.flush();
       res.status(202).json(existing);
       return;
     }
-    const job = queue.enqueue('trends', '刷新抖音热榜', async (ctx) => {
-      const trends = await browser.trends(ctx);
-      store.trends = trends;
-      store.trendsAt = new Date().toISOString();
-      store.changed();
-      ctx.update({ result: { trends, fetchedAt: store.trendsAt } });
-    });
+    const job = keyedJob(store, req.get('Idempotency-Key'), 'trends', {}, () =>
+      queue.enqueue('trends', '刷新抖音热榜', async (ctx) => {
+        const trends = await browser.trends(ctx);
+        store.trends = trends;
+        store.trendsAt = new Date().toISOString();
+        store.changed();
+        ctx.update({ result: { trends, fetchedAt: store.trendsAt } });
+      }),
+    );
+    await store.flush();
+    res.status(202).json(job);
+  });
+  app.post('/api/comments', async (req, res) => {
+    const { videoId, limit, maxScrolls } = commentsSchema.parse(req.body);
+    const job = keyedJob(store, req.get('Idempotency-Key'), 'comments', { videoId, limit, maxScrolls }, () =>
+      queue.enqueue('comments', `读取作品评论：${videoId}`, async (ctx) => {
+        const commentCollection = await browser.comments(videoId, limit, maxScrolls, ctx);
+        ctx.update({ result: { commentCollection, fetchedAt: new Date().toISOString() } });
+      }),
+    );
+    await store.flush();
     res.status(202).json(job);
   });
   app.post('/api/downloads', (req, res) => {
@@ -179,6 +213,49 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
     }
     res.json({ ok: true });
   });
+  app.get('/api/jobs/:id', async (req, res) => {
+    const job = store.jobs.find((entry) => entry.id === req.params.id);
+    if (!job) {
+      res
+        .status(404)
+        .json({ error: 'Job result unavailable; do not submit with a new key to guess its outcome' });
+      return;
+    }
+    await store.flush();
+    res.json(job);
+  });
+  app.get('/api/jobs/:id/source-media', async (req, res) => {
+    const job = store.jobs.find((entry) => entry.id === req.params.id);
+    const media = store.sourceMedia.get(String(req.params.id));
+    if (
+      !job ||
+      job.status !== 'completed' ||
+      job.type !== 'resolve' ||
+      !media ||
+      job.result?.videos?.[0]?.id !== media.videoId
+    ) {
+      res.status(409).json({
+        error: 'Source media descriptor unavailable; inspect the original job without resubmitting',
+      });
+      return;
+    }
+    await store.flush();
+    res.json(media);
+  });
+  app.get('/api/receipts/:key', async (req, res) => {
+    const receipt = store.receipts.get(String(req.params.key));
+    if (!receipt) {
+      res.status(404).json({ error: 'No submission receipt' });
+      return;
+    }
+    const job = store.jobs.find((entry) => entry.id === receipt.jobId);
+    if (!job) {
+      res.status(409).json({ error: 'Receipt exists but result was evicted; no automatic resubmission' });
+      return;
+    }
+    await store.flush();
+    res.json(job);
+  });
   app.get('/api/downloads/:id/file', async (req, res) => {
     const job = store.jobs.find(
       (j) => j.id === req.params.id && j.type === 'download' && j.status === 'completed',
@@ -217,6 +294,10 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
   if (res.headersSent) return;
   if (error instanceof ZodError) {
     res.status(400).json({ error: '输入格式不正确，请检查关键词、结果数量或视频 ID。' });
+    return;
+  }
+  if (error instanceof RequestConflict) {
+    res.status(error.status).json({ error: error.message });
     return;
   }
   const message = error instanceof Error ? error.message : '服务发生错误';

@@ -1,13 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { Job, Snapshot, StoredVideo } from '../shared/types.js';
+import type { Job, Snapshot, StoredVideo, SourceMedia } from '../shared/types.js';
 
 export class Store extends EventEmitter {
   jobs: Job[] = [];
   videos = new Map<string, StoredVideo>();
   trends: Snapshot['trends'] = [];
   trendsAt: string | null = null;
+  receipts = new Map<string, { hash: string; jobId: string }>();
+  sourceMedia = new Map<string, SourceMedia>();
   connection: Snapshot['connection'] = {
     connected: false,
     login: 'unknown',
@@ -33,6 +35,8 @@ export class Store extends EventEmitter {
       );
       this.trends = data.trends || [];
       this.trendsAt = data.trendsAt || null;
+      this.receipts = new Map(Object.entries(data.receipts || {}));
+      this.sourceMedia = new Map(Object.entries(data.sourceMedia || {}));
       for (const job of this.jobs)
         if (job.status === 'running' || job.status === 'queued') {
           job.status = 'failed';
@@ -69,13 +73,29 @@ export class Store extends EventEmitter {
       videos: [...this.videos.values()],
       trends: this.trends,
       trendsAt: this.trendsAt,
+      receipts: Object.fromEntries(this.receipts),
+      sourceMedia: Object.fromEntries(this.sourceMedia),
     });
     const file = path.join(this.root, 'state.json');
     this.writes = this.writes
       .catch(() => {})
       .then(async () => {
-        await fs.writeFile(`${file}.tmp`, payload, { mode: 0o600 });
+        const handle = await fs.open(`${file}.tmp`, 'w', 0o600);
+        try {
+          await handle.writeFile(payload);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         await fs.rename(`${file}.tmp`, file);
+        if (process.platform !== 'win32') {
+          const directory = await fs.open(this.root, 'r');
+          try {
+            await directory.sync();
+          } finally {
+            await directory.close();
+          }
+        }
       });
     await this.writes;
   }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   parseVideoInput,
   mediaUrl,
@@ -53,7 +54,7 @@ test('file paths cannot escape the download directory', () => {
   assert(!/[\\/\n\u202e:]/.test(name));
   assert(!name.startsWith('.'));
   assert(name.endsWith('_1234-abc.mp4'));
-  assert.equal(localFile('/tmp/downloads', name), `/tmp/downloads/${name}`);
+  assert.equal(localFile('/tmp/downloads', name), path.join('/tmp/downloads', name));
   for (const unsafe of ['../x.mp4', '/etc/a.mp4', '.hidden.mp4', 'x.txt'])
     assert.throws(() => localFile('/tmp/downloads', unsafe));
 });

@@ -10,7 +10,7 @@ import { JobQueue } from '../server/jobs.js';
 import { createApp, errorHandler } from '../server/app.js';
 import type { DouyinBrowser } from '../server/browser.js';
 
-test('API rejects cross-origin requests, validates input and never exposes media URLs', async () => {
+test('API rejects cross-origin requests, validates input and never exposes media URLs', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-api-'));
   const store = new Store(path.join(dir, '.data'));
   await store.init();
@@ -37,6 +37,13 @@ test('API rejects cross-origin requests, validates input and never exposes media
         mediaUrls: ['https://v3.douyinvod.com/private-signed-url'],
       },
     ],
+    comments: async (videoId: string) => ({
+      videoId,
+      comments: [],
+      pages: [],
+      endReason: 'entry_exhausted',
+      coverage: 'bounded_top_level_comments',
+    }),
   } as unknown as DouyinBrowser;
   const app = createApp(store, fake, queue);
   app.use(errorHandler);
@@ -46,6 +53,53 @@ test('API rejects cross-origin requests, validates input and never exposes media
   const headers = { 'Content-Type': 'application/json', 'X-Studio-Client': '1' };
   try {
     assert.equal((await fetch(`${base}/health`)).status, 200);
+    assert.equal(
+      (
+        await fetch(`${base}/comments`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ videoId: 'invalid' }),
+        })
+      ).status,
+      400,
+    );
+    const commentTask = await fetch(`${base}/comments`, {
+      method: 'POST',
+      headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
+      body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 0 }),
+    });
+    assert.equal(commentTask.status, 202);
+    const accepted = await commentTask.json();
+    const duplicate = await fetch(`${base}/comments`, {
+      method: 'POST',
+      headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
+      body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 0 }),
+    });
+    assert.equal((await duplicate.json()).id, accepted.id);
+    await queue.idle();
+    assert.equal((await (await fetch(`${base}/receipts/${'c'.repeat(64)}`)).json()).id, accepted.id);
+    assert.equal((await (await fetch(`${base}/jobs/${accepted.id}`)).json()).status, 'completed');
+    assert.equal(
+      (
+        await fetch(`${base}/comments`, {
+          method: 'POST',
+          headers: { ...headers, 'Idempotency-Key': 'c'.repeat(64) },
+          body: JSON.stringify({ videoId: '1234567890123456789', maxScrolls: 1 }),
+        })
+      ).status,
+      409,
+    );
+    assert.equal(store.jobs[0].result?.commentCollection?.videoId, '1234567890123456789');
+    assert.equal(
+      (
+        await fetch(`${base}/browser/check`, {
+          method: 'POST',
+          headers: { 'X-Studio-Client': '1', 'Content-Type': 'text/plain' },
+          body: '{}',
+        })
+      ).status,
+      415,
+    );
     assert.equal(
       (
         await fetch(`${base}/search`, {
@@ -112,9 +166,19 @@ test('API rejects cross-origin requests, validates input and never exposes media
     assert.equal(attachment.status, 200);
     assert.match(attachment.headers.get('content-disposition')!, /attachment/);
     assert.deepEqual(Buffer.from(await attachment.arrayBuffer()), contents);
-    await fs.symlink(path.join(dir, 'outside.mp4'), path.join(store.downloads, 'linked.mp4'));
-    store.jobs[0].fileName = 'linked.mp4';
-    assert.equal((await fetch(`${base}/downloads/download-fixture/file`)).status, 404);
+    await t.test('symbolic-link files are rejected', async (linkTest) => {
+      try {
+        await fs.symlink(path.join(dir, 'outside.mp4'), path.join(store.downloads, 'linked.mp4'));
+      } catch (error) {
+        if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+          linkTest.skip('Windows account lacks permission to create a file symbolic link');
+          return;
+        }
+        throw error;
+      }
+      store.jobs[0].fileName = 'linked.mp4';
+      assert.equal((await fetch(`${base}/downloads/download-fixture/file`)).status, 404);
+    });
     assert.equal((await fetch(`${base}/download-missing`)).status, 404);
   } finally {
     server.closeAllConnections();

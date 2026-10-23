@@ -26,7 +26,19 @@ if (production) {
 } else {
   vite = await createViteServer({
     root,
-    server: { middlewareMode: true, hmr: { port: port + 1, host: '127.0.0.1' }, fs: { strict: true } },
+    server: {
+      middlewareMode: true,
+      hmr: { port: port + 1, host: '127.0.0.1' },
+      fs: { strict: true },
+      // Browser databases are locked on Windows and are not application source files.
+      watch: {
+        ignored: [
+          store.root,
+          path.join(root, '.data'),
+          path.resolve(process.env.DOUYIN_PROFILE_DIR || path.join(store.root, 'browser')),
+        ].map((directory) => `${directory.replaceAll('\\', '/')}/**`),
+      },
+    },
     appType: 'spa',
   });
   app.use(vite.middlewares);
