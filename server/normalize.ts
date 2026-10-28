@@ -43,6 +43,13 @@ export function normalizeVideo(value: unknown): StoredVideo | null {
     id,
     title: string(raw.desc) || string(raw.caption) || '未命名视频',
     author: string(author.nickname) || string(raw.authorName) || '未知作者',
+    authorId: /^\d{1,30}$/.test(string(author.uid)) ? string(author.uid) : null,
+    topics: (Array.isArray(raw.cha_list) ? raw.cha_list : []).flatMap((value) => {
+      const topic = record(value);
+      return /^\d{1,30}$/.test(string(topic.cid)) && string(topic.cha_name)
+        ? [{ id: string(topic.cid), name: string(topic.cha_name) }]
+        : [];
+    }),
     url: `https://www.douyin.com/video/${id}`,
     cover: urls(video.cover)[0] || urls(video.origin_cover)[0] || urls(video.dynamic_cover)[0] || '',
     duration: Math.round((numeric(video.duration) || numeric(raw.duration) || 0) / 1000),
