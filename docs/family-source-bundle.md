@@ -53,14 +53,49 @@ Each execution has a single-writer lock. After a hard exit, `recover-lock` with 
 
 ## Current capabilities
 
-| Capability                                                                            | Validation                                                                 |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Self-contained video bundle, second/ms precision, undated input                       | Actual central import/sync/timeline/verify exercised offline               |
-| Family action, keyed receipts, fresh head epochs, persistent stop/cancel              | Local API fixture with separate Studio/client process restarts             |
-| Native historical cursor/date filters, historical enumeration, author/series backfill | Unsupported (#5/#6); `mode=history` persists unsupported without a request |
-| Comments in this family bundle                                                        | Not implemented; existing comment evidence export unchanged                |
-| Real account access                                                                   | Blocked by unresolved verification (#3)                                    |
+| Capability                                                                            | Validation                                                                        |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Self-contained video bundle, second/ms precision, undated input                       | Actual central import/sync/timeline/verify exercised offline                      |
+| Family action, keyed receipts, fresh head epochs, persistent stop/cancel              | Local API fixture with separate Studio/client process restarts                    |
+| Native historical cursor/date filters, historical enumeration, author/series backfill | Unsupported (#5/#6); `mode=history` persists unsupported without a request        |
+| Comments in this family bundle                                                        | Hash/text/video-bound native page views and cursor preservation, offline fixtures |
+| Real account access                                                                   | Blocked by unresolved verification (#3)                                           |
 
-Historical popularity remains first priority; head refresh is only a bounded current search. Ordinary content remains metadata-only. Models, media decoding, old cancelled subscriptions and formal meme publication are outside this producer.
+Bilibili explainers supply discovery anchors. Douyin supplements their explicit source hints, derivative candidates and actual usage; it does not independently register new families. Content publication time drives the timeline, while counters are snapshots at observation time. Head refresh remains a bounded current search. Ordinary content remains metadata-only. Models, media decoding, old cancelled subscriptions and formal meme publication are outside this producer.
 
 The committed fixture and tests cover explicit date units, Unicode evidence binding, stop outcomes, receipt loss, head refresh, cancellation after replanning and separate-process restart. The API fixture uses real Store/JobQueue/createApp with a synthetic reader: no browser, cookies or upstream requests. Private acceptance additionally runs central import→family-sync→timeline→verify, replay with zero new events, and import recovery after a staged-row interruption. Fixture validation does not clear verification or claim real online acceptance.
+
+## Comment bundles
+
+The same `export` command accepts `type=comments` jobs, including the direct-result archive layout written by `collect.ts`. Pass the saved job path and an explicit publication unit. Each record uses `item_id=video_id:comment_id`, the parent video URL, exact comment text and a JSON pointer into an allowlisted native response view. Comment timestamps describe comments, never their parent videos. Missing dates remain unknown. Response body hashes, raw `cursor` values and raw `has_more` survive in the view; complete private response bodies remain in the private reader archive because they can contain signed avatar URLs.
+
+`comment_cursor` records the final cursor, page body hash, unexported comment versions, repeated cursors and whether page replay is necessary. `native_resume_implemented=false`: preserving a cursor does not implement restartable cursor requests. Completed jobs are `partial` on truncation, missing pages, repeated cursors or a non-exhausted entry; `succeeded` means only that the saved bounded top-level comment entry exhausted. Replies are outside that scope. Blocked jobs retain both their stop and valid partial records.
+
+## Bilibili anchor conversion
+
+```sh
+node --import tsx scripts/anchor-requests.ts /private/anchor.json /private/evidence-objects > /private/requests.json
+```
+
+This offline converter checks referenced object hashes and exact codepoint spans. Its platform-local input requires `family_id`, `purpose=source|derivative|usage`, `terms` (names/aliases/original phrases) and `evidence_refs` using the existing action reference format. `source_hint`, when explicit, is `{kind: url|named|quote, value: ...}`. Work/segment identity is retained through original evidence objects and their locators; this converter does not invent shared central anchor fields.
+
+`source` without an explicit hint returns `missing_source`. A canonical Douyin video hint returns `detail_url`; short/external links require explicit resolution elsewhere. Named hints and quoted source phrases become search actions. Derivative/usage terms become separate existing `find_independent_uses` actions, while output `context` retains the exact original purpose, family, terms, source hint and evidence refs. Keep `context` beside each action/result until coordinator wiring is ready. No action is submitted by this converter. Central scheduling and context import are not implemented here.
+
+Search hits are relation candidates. Derivative and usage roles can overlap; quoted source claims remain claims, and weak matches remain candidates. Comments do not automatically establish parent-video family membership. Newly encountered names require Bilibili follow-up, not new family registration.
+
+## Reader capability matrix (this increment)
+
+Account access is blocked by #3 across these entries; offline verification does not clear that state.
+
+| Capability                        | Implemented | Offline verified                       | Live verified in this increment | Unsupported capability/gap                  |
+| --------------------------------- | ----------- | -------------------------------------- | ------------------------------- | ------------------------------------------- |
+| Search/detail video bundle        | yes         | yes (existing tests retained)          | no                              | bounded results only                        |
+| Comment reader → source bundle    | yes         | yes (synthetic two-page native bodies) | no                              | replies excluded                            |
+| Comment raw cursor preservation   | yes         | yes                                    | no                              | restartable native requests absent          |
+| Bilibili anchor input conversion  | yes         | yes (proof/role/missing source)        | no                              | central context/dispatch wiring pending     |
+| Native search cursor continuation | no          | no                                     | no                              | missing saved native response contract (#5) |
+| Author feed                       | no          | no                                     | no                              | missing saved native response contract (#5) |
+| Topic feed                        | no          | no                                     | no                              | missing saved native response contract (#5) |
+| Related videos                    | no          | no                                     | no                              | missing saved native response contract (#5) |
+
+The saved pilot JSON audit found normalized/diagnostic jobs, not native responses proving these four contracts. No endpoint, signature or cursor field was guessed. Author/topic/related work is scoped to supplementing anchors, not whole-platform historical popularity enumeration. No historical-popularity proof is required for content admission.
