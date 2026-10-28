@@ -2,6 +2,25 @@
 
 The Studio reader remains bounded. This change adds a deterministic **offline converter**, not a second crawler, scheduler, database, or OCR worker. Shared CyberMemoir discovery owns seed rotation, budgets, native reader tasks, receipt recovery, media download, and resource leases.
 
+## Historical popularity first
+
+CyberMemoir prioritizes memes and uses that were popular in the past. Current trends are supplementary discovery inputs, not the main corpus or a substitute for historical backfill. A high current lifetime like/view count does not establish popularity in the publication year, and historical popularity alone does not establish meme identity.
+
+Future coordinator source priority, subject to verified access:
+
+1. Year/month buckets backed by contemporaneous historical rankings, curated selections and dated snapshots.
+2. Older author/series posts and original-period posts, discussions and reporting, using exact known identities and aliases.
+3. Retrospectives, explainers and later compilations as leads back to original evidence; their later claims are not upgraded to contemporaneous ranking facts.
+4. Current search/recommendations/hot words as supplementary leads.
+
+Original publication, first evidenced popularity and later revivals must remain separate; one item may have several popularity windows. A discovery edge observed today is not a historical propagation edge. Evidence strength must distinguish dated contemporaneous rankings, contemporaneous interactions/traceable circulation, and later retrospective claims.
+
+The existing node's `published_at_raw` is the work's returned publication value; `observed_at` records collection evidence timing. Current metrics are observations of cumulative counters, not historical snapshots. This converter has **no** implemented historical popularity-window inference, historical ranking enumerator, server-side search-date filter, author back-catalog/series reader, or historical coverage denominator. Evidence publication time and metric sampling time need explicit source bindings in a later additive implementation; unknowns remain unknown rather than being copied from work publication or collection time.
+
+The next phase should retain five distinct times: work publication, historical popularity window(s), source evidence publication, metric sampling, and current collection. These are requirements for future historical evidence records, not claims that all five fields already exist in the present export. Keep `schema_version=1` and edge identity objects unchanged while coordinating additive fields with the shared owner.
+
+Acceptance should sample multiple historical year/time buckets, count items with contemporaneous popularity evidence separately from retrospective leads, and report missing pages/expired items/unknown popularity windows. Do not report whole-platform historical coverage without a known denominator. This documentation change performs no backfill, expands no request budget, modifies no frozen materials and clears no pause. Track concrete reader gaps in [issue #5](https://github.com/CyberMemoir/douyin-studio/issues/5), separately from account verification in [issue #3](https://github.com/CyberMemoir/douyin-studio/issues/3).
+
 ## Inputs and CLI
 
 Use public normalized `GET /api/jobs/:id` or existing `collect.ts` archives. Keep real archives and outputs private.
