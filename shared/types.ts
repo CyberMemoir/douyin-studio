@@ -2,6 +2,8 @@ export type Video = {
   id: string;
   title: string;
   author: string;
+  authorId?: string | null;
+  topics?: { id: string; name: string }[];
   url: string;
   cover: string;
   duration: number;

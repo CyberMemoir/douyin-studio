@@ -30,6 +30,21 @@ const delay = (ms: number, signal: AbortSignal) =>
     signal.addEventListener('abort', stop, { once: true });
   });
 
+export async function waitForSearchData(
+  ready: () => boolean,
+  checkAccess: () => Promise<void>,
+  signal: AbortSignal,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    signal.throwIfAborted();
+    await checkAccess();
+    if (ready() || Date.now() >= deadline) return;
+    await delay(Math.min(500, Math.max(1, deadline - Date.now())), signal);
+  }
+}
+
 export class DouyinBrowser {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -126,6 +141,30 @@ export class DouyinBrowser {
     job.signal.throwIfAborted();
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
+    const loadingFailures: { path: string; type: string; error: string }[] = [];
+    const pageErrors: string[] = [];
+    const failedRequest = (request: import('playwright').Request) => {
+      if (loadingFailures.length >= 30) return;
+      const url = new URL(request.url());
+      loadingFailures.push({
+        path: `${url.origin}${url.pathname}`,
+        type: request.resourceType(),
+        error: request.failure()?.errorText || 'unknown',
+      });
+    };
+    const pageError = (error: Error) => {
+      if (pageErrors.length < 20)
+        pageErrors.push(
+          error.message
+            .replace(/https?:\/\/[^\s)]+/g, (value) => {
+              const url = new URL(value);
+              return `${url.origin}${url.pathname}`;
+            })
+            .slice(0, 700),
+        );
+    };
+    page.on('requestfailed', failedRequest);
+    page.on('pageerror', pageError);
     const abort = () => {
       void page.close().catch(() => {});
     };
@@ -134,7 +173,7 @@ export class DouyinBrowser {
     try {
       return await action(page);
     } catch (error) {
-      await this.saveFailureDiagnostics(page, job).catch(() => {});
+      await this.saveFailureDiagnostics(page, job, { loadingFailures, pageErrors }).catch(() => {});
       if (!job.signal.aborted && /人工验证|重新登录/.test(error instanceof Error ? error.message : '')) {
         this.persistAccessPause();
         needsAttention = true;
@@ -144,6 +183,8 @@ export class DouyinBrowser {
       }
       throw error;
     } finally {
+      page.off('requestfailed', failedRequest);
+      page.off('pageerror', pageError);
       job.signal.removeEventListener('abort', abort);
       if (!needsAttention) await page.close().catch(() => {});
     }
@@ -174,12 +215,13 @@ export class DouyinBrowser {
     }
   }
 
-  private async saveFailureDiagnostics(page: Page, job: JobContext) {
+  private async saveFailureDiagnostics(page: Page, job: JobContext, loading: object) {
     const directory = process.env.DOUYIN_DIAGNOSTICS_DIR;
     if (!directory || page.isClosed() || job.signal.aborted) return;
     await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
     const url = new URL(page.url());
     const snapshot = {
+      ...loading,
       observedAt: new Date().toISOString(),
       url: `${url.origin}${url.pathname}`,
       title: await page.title().catch(() => ''),
@@ -248,6 +290,8 @@ export class DouyinBrowser {
         return;
       }
       if (!response.ok()) return;
+      // The search document is HTML, not a failed JSON search response.
+      if (/text\/html/i.test(summary.contentType)) return;
       if (Number(response.headers()['content-length'] || 0) > 12_000_000) return;
       const task = (async () => {
         try {
@@ -333,7 +377,19 @@ export class DouyinBrowser {
           `https://www.douyin.com/search/${encodeURIComponent(query)}?type=video`,
         );
         for (let round = 0; round <= maxScrolls; round++) {
-          await delay(round === 0 ? 6500 : 1500, job.signal);
+          if (round === 0) {
+            await waitForSearchData(
+              () =>
+                captured.videos.size > 0 ||
+                captured.responses.some((response) => response.videos !== undefined),
+              async () => {
+                captured.check();
+                const block = await this.blocked(page);
+                if (block) throw new Error(block);
+              },
+              job.signal,
+            );
+          } else await delay(1500, job.signal);
           captured.check();
           const block = await this.blocked(page);
           if (block) throw new Error(block);
