@@ -1,0 +1,43 @@
+{
+  "id": "synthetic-family-search",
+  "type": "search",
+  "status": "completed",
+  "title": "搜索：甲表达",
+  "createdAt": "2026-10-28T00:00:00Z",
+  "updatedAt": "2026-10-28T00:00:01Z",
+  "progress": 100,
+  "phase": "completed",
+  "logs": [],
+  "result": {
+    "fetchedAt": "2026-10-28T00:00:01Z",
+    "videos": [
+      {
+        "id": "1234567890123456789",
+        "url": "https://www.douyin.com/video/1234567890123456789",
+        "title": "甲表达是什么梗",
+        "author": "synthetic",
+        "authorId": "987654321",
+        "cover": "https://example.invalid/signed?token=fixture",
+        "duration": 10,
+        "likes": 12,
+        "comments": 0,
+        "createdAt": 1553184000,
+        "source": "network",
+        "searchContext": { "requestedQuery": "甲表达", "observedAt": "2026-10-28T00:00:01Z" }
+      },
+      {
+        "id": "2234567890123456789",
+        "url": "https://www.douyin.com/video/2234567890123456789",
+        "title": "又遇到甲表达",
+        "author": "synthetic-two",
+        "cover": "",
+        "duration": 0,
+        "likes": 0,
+        "comments": null,
+        "createdAt": null,
+        "source": "network",
+        "searchContext": { "requestedQuery": "甲表达", "observedAt": "2026-10-28T00:00:01Z" }
+      }
+    ]
+  }
+}
