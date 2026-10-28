@@ -7,12 +7,12 @@ type Identity = { platform: 'douyin'; entity_type: 'video' | 'author' | 'topic' 
 type Evidence = { observed_at: string | null; evidence_sha: string; locator: string };
 export type Node = Identity &
   Evidence & {
-    schema_version: 'platform-collection-v1';
+    schema_version: 1;
     canonical_url: string | null;
     [key: string]: unknown;
   };
 type Edge = Evidence & {
-  schema_version: 'platform-collection-v1';
+  schema_version: 1;
   from: Identity;
   to: Identity;
   relation: string;
@@ -97,7 +97,7 @@ export function discoveryExport(
     const node: Node = {
       ...id,
       ...evidence,
-      schema_version: 'platform-collection-v1',
+      schema_version: 1,
       canonical_url: null,
       ...fields,
     };
@@ -109,7 +109,7 @@ export function discoveryExport(
     }
   };
   const addEdge = (from: Identity, to: Identity, relation: string, evidence: Evidence) => {
-    const edge: Edge = { schema_version: 'platform-collection-v1', from, to, relation, ...evidence };
+    const edge: Edge = { schema_version: 1, from, to, relation, ...evidence };
     const edgeId = digest(JSON.stringify(edge));
     if (!state.edges[edgeId]) {
       state.edges[edgeId] = edge;
@@ -313,7 +313,7 @@ export function discoveryExport(
     state,
     capabilities,
     summary: {
-      schema_version: 'platform-collection-v1',
+      schema_version: 1,
       status: blocked ? 'blocked_verification' : job.status === 'completed' ? 'partial' : 'failed',
       reason: blocked
         ? 'persistent_verification_pause_requires_operator'

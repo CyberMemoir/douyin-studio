@@ -61,7 +61,7 @@ async function main() {
       report.frontier
         .filter((request) => request.kind === 'media_descriptor')
         .map((request) => ({
-          schema_version: 'platform-collection-v1',
+          schema_version: 1,
           platform: 'douyin',
           video_id: request.video_id,
           canonical_url: `https://www.douyin.com/video/${request.video_id}`,
