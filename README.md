@@ -12,6 +12,8 @@ React + TypeScript + Express + Playwright。界面和后台在自己的电脑运
 
 ## 功能
 
+梗族服务接线见 [source bundle 与 search action](docs/family-source-bundle.md)：自包含原文证据包、明确时间单位、keyed head 刷新与持久停止/取消。原生历史分页尚未实现；已有账号暂停保持生效。
+
 常驻服务器接入见 [生产采集接口](docs/server-collection.md)：持久提交回执、重启恢复、共享访问暂停及有界搜索。需要与 CyberMemoir 的独立队列服务一起部署，真实 Linux/账号连续运行仍待验收。
 
 服务器可以在正常账号配置后设置`DOUYIN_HEADLESS=true`。读取触发验证/登录提醒会保存`.data/comments-access-pause.json`，后续搜索、详情、热榜、评论均在访问平台前停止。操作员先处理平台问题、保存旧暂停记录，再移除标记并重启工作台；不自动恢复或换身份重试。此次离线修复已测试，真实页面选择器与持续服务器采集仍需线上验证。
