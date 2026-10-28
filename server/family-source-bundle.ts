@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Job } from '../shared/types.js';
+import { commentEvidence } from './comment-evidence.js';
 
 export const sha256 = (body: string | Buffer) => createHash('sha256').update(body).digest('hex');
 export type PublicationUnit = 'seconds' | 'milliseconds' | 'unknown';
@@ -146,12 +147,14 @@ export async function produceBundle(
     execution?: { execution_id: string; mode: string; epoch: string; status: string; reader_origin: string };
   },
 ) {
-  if (!['search', 'resolve'].includes(job.type))
-    throw new Error('Family producer currently supports search/resolve video jobs only');
+  if (!['search', 'resolve', 'comments'].includes(job.type))
+    throw new Error('Family producer supports search/resolve/comments jobs only');
   if (!options.sourceId || !['seconds', 'milliseconds', 'unknown'].includes(options.publicationUnit))
     throw new Error('Explicit source identity/publication unit required');
   const action = options.action ? validateAction(options.action) : null;
-  const videos = (job.result?.videos ?? []).map((video) => {
+  if (action && job.type === 'comments') throw new Error('Search action cannot be rebound to comments');
+  const comments = job.type === 'comments' ? commentEvidence(job) : null;
+  const videos = (comments ? [] : (job.result?.videos ?? [])).map((video) => {
     if (!/^\d{8,30}$/.test(video.id) || video.url !== `https://www.douyin.com/video/${video.id}`)
       throw new Error('Video identity mismatch');
     const observed =
@@ -178,49 +181,84 @@ export async function produceBundle(
     };
   });
   if (videos.length > 1000) throw new Error('Bundle record budget exceeded');
-  const outcome = readerOutcome(job);
+  const outcome =
+    comments && job.status === 'completed'
+      ? { outcome: comments.complete ? 'succeeded' : 'partial', reader_outcome: 'bounded_top_level_comments' }
+      : readerOutcome(job);
   const view = {
     schema_version: 1,
     reader: { id: job.id, type: job.type, status: job.status, stop_code: outcome.reader_outcome },
     videos,
     action,
+    ...(comments ? { comment_pages: comments.pages } : {}),
   };
   const body = Buffer.from(JSON.stringify(view));
   const evidenceSha = sha256(body);
   const objects = new Map<string, Buffer>([[evidenceSha, body]]);
   for (const [sha, bytes] of await actionEvidence(action, options.actionObjects)) objects.set(sha, bytes);
-  const records = videos.map((video, index) => {
-    const proof = {
-      evidence_sha: evidenceSha,
-      locator: `/videos/${index}/published_at_raw`,
-      raw_value: video.published_at_raw,
-    };
-    const normalized =
-      video.published_at_raw === null || options.publicationUnit === 'unknown'
-        ? null
-        : epochTime(video.published_at_raw, options.publicationUnit, proof);
-    return {
-      schema_version: 1,
-      platform: 'douyin',
-      kind: 'video',
-      item_id: video.id,
-      url: video.url,
-      author_id: video.author_id,
-      observed_at: video.observed_at,
-      evidence_sha: evidenceSha,
-      texts: [{ kind: 'title', text: video.title, locator: `/videos/${index}/title` }],
-      published_at_raw: video.published_at_raw,
-      publication_unit: video.published_at_raw === null ? 'unknown' : options.publicationUnit,
-      normalized_published_time: normalized,
-      metrics: video.metrics,
-      is_actual_search_log: false,
-      source_material: options.material,
-      observation_basis: video.observation_basis,
-      analysis_profile: {
-        source_role: action?.purpose === 'find_explainer' ? 'explainer_candidate' : 'unknown',
-      },
-    };
-  });
+  const records = comments
+    ? comments.rows.map((comment) => {
+        const proof = {
+          evidence_sha: evidenceSha,
+          locator: comment.locator + '/create_time',
+          raw_value: comment.published_at_raw,
+        };
+        return {
+          schema_version: 1,
+          platform: 'douyin',
+          kind: 'comment',
+          item_id: `${comment.video_id}:${comment.comment_id}`,
+          url: `https://www.douyin.com/video/${comment.video_id}`,
+          author_id: comment.author_id,
+          observed_at: comment.observed_at,
+          evidence_sha: evidenceSha,
+          texts: [{ kind: 'comment', text: comment.text, locator: comment.locator + '/text' }],
+          published_at_raw: comment.published_at_raw,
+          publication_unit: comment.published_at_raw === null ? 'unknown' : options.publicationUnit,
+          normalized_published_time:
+            comment.published_at_raw === null || options.publicationUnit === 'unknown'
+              ? null
+              : epochTime(comment.published_at_raw, options.publicationUnit, proof),
+          metrics: { likes: comment.likes },
+          is_actual_search_log: false,
+          source_material: options.material,
+          observation_basis: 'response_body_parse',
+          analysis_profile: { source_role: 'unknown' },
+        };
+      })
+    : videos.map((video, index) => {
+        const proof = {
+          evidence_sha: evidenceSha,
+          locator: `/videos/${index}/published_at_raw`,
+          raw_value: video.published_at_raw,
+        };
+        const normalized =
+          video.published_at_raw === null || options.publicationUnit === 'unknown'
+            ? null
+            : epochTime(video.published_at_raw, options.publicationUnit, proof);
+        return {
+          schema_version: 1,
+          platform: 'douyin',
+          kind: 'video',
+          item_id: video.id,
+          url: video.url,
+          author_id: video.author_id,
+          observed_at: video.observed_at,
+          evidence_sha: evidenceSha,
+          texts: [{ kind: 'title', text: video.title, locator: `/videos/${index}/title` }],
+          published_at_raw: video.published_at_raw,
+          publication_unit: video.published_at_raw === null ? 'unknown' : options.publicationUnit,
+          normalized_published_time: normalized,
+          metrics: video.metrics,
+          is_actual_search_log: false,
+          source_material: options.material,
+          observation_basis: video.observation_basis,
+          analysis_profile: {
+            source_role: action?.purpose === 'find_explainer' ? 'explainer_candidate' : 'unknown',
+          },
+        };
+      });
+  if (records.length > 1000) throw new Error('Bundle record budget exceeded');
   const recordsBody = records.map((row) => JSON.stringify(row) + '\n').join('');
   if (Buffer.byteLength(recordsBody) > 16 * 1024 ** 2) throw new Error('Bundle byte budget exceeded');
   const manifest = {
@@ -242,6 +280,7 @@ export async function produceBundle(
     objects: [...objects.keys()].sort(),
     material: options.material,
     record_count: records.length,
+    ...(comments ? { comment_cursor: comments.cursor, comment_end_reason: comments.endReason } : {}),
     native_history_cursor: null,
     history_capability: 'unsupported',
     public_import_authorized: false,
