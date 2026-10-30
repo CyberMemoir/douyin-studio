@@ -1,0 +1,12 @@
+{
+  "output": "./private-frontier",
+  "bilibili_database": "./bilibili/data/collection.sqlite3",
+  "acceptance_state": "./bilibili/acceptance/state.json",
+  "pause_file": "./studio-data/comments-access-pause.json",
+  "transport": "replay",
+  "replay_file": "./replay.json",
+  "studio_origin": "http://127.0.0.1:4321",
+  "intake_batch": 200,
+  "reader_jobs_per_round": 4,
+  "idle_wait_seconds": 5
+}
