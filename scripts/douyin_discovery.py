@@ -168,6 +168,16 @@ def main():
     frontier = None
     try:
         frontier = Frontier(root)
+        saved_mode = frontier.get("transport_mode")
+        if saved_mode is None:
+            previous = frontier.db.execute(
+                "SELECT json_extract(record,'$.mode') FROM receipts ORDER BY id LIMIT 1"
+            ).fetchone()
+            saved_mode = previous[0] if previous else None
+        if saved_mode is not None and saved_mode != mode:
+            raise ValueError("Replay and live require separate frontier directories")
+        with frontier.db:
+            frontier.set("transport_mode", mode)
         transport = (
             Replay(frontier, local("replay_file"))
             if mode == "replay"

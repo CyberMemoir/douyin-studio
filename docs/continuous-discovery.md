@@ -30,6 +30,8 @@ Replay files contain `jobs`, keyed by `search:<literal query>` or `resolve:<cano
 
 Future real execution requires **both** `transport=live` in the configuration and explicit `--live`. It uses only the existing local `/api/search` (also handles canonical resolve URLs), `/api/receipts/:key` and `/api/jobs/:id`. No direct native platform endpoint is invented. This work did not run that mode. Existing account recovery must be handled explicitly later; changing transport or passing `--live` cannot override an access pause.
 
+Replay and live must use separate frontier directories. A persisted transport identity prevents relabelling fixture records as live work; switching a used directory's mode stops before constructing the live transport.
+
 ## Incremental intake and identity
 
 Bilibili SQLite is opened with `mode=ro` and `query_only`; no Store, migrations or evaluations are loaded. Catalog and observation rowids have separate durable high waters. Initial rowid ceilings separate history from subsequently arriving head material. Bounded catalog intake supplies initial candidates; appended observations supply metadata updates to existing BVIDs. Receipts distinguish new anchors, revised anchors and scanned rows. Replaying an already-seen revision does not create another task.

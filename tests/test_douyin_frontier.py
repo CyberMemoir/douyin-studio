@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -128,6 +130,49 @@ class Reader:
 
 
 class FrontierTests(unittest.TestCase):
+    def test_replay_frontier_cannot_be_relabelled_live(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frontier = Frontier(root / "run")
+            with frontier.db:
+                frontier.set("transport_mode", "replay")
+            frontier.db.close()
+            config = root / "config.json"
+            config.write_text(
+                json.dumps(
+                    {
+                        "output": "run",
+                        "pause_file": "pause.json",
+                        "deadline": time.time() + 60,
+                        "transport": "live",
+                        "studio_origin": "http://127.0.0.1:9",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-X",
+                    "utf8",
+                    str(Path(__file__).parents[1] / "scripts/douyin_discovery.py"),
+                    "--config",
+                    str(config),
+                    "--live",
+                    "--rounds",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("separate frontier directories", result.stderr)
+            self.assertTrue((root / "run/FAULT").exists())
+
     def test_waiting_job_is_recovered_before_any_other_submission(self):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(tempfile.TemporaryDirectory()))
