@@ -77,7 +77,10 @@ def inspect(output, pause_file, acceptance_state):
     saved = json.loads((output / "state.json").read_text(encoding="utf-8"))
     acceptance = json.loads(acceptance_state.read_text(encoding="utf-8"))
     deadline = acceptance["deadline"]
-    saved.update(checked_at=time.time(), deadline=deadline, pause_present=pause_file.exists())
+    pause_body = pause_file.read_bytes() if pause_file.exists() else None
+    saved.update(checked_at=time.time(), deadline=deadline, pause_present=pause_body is not None,
+                 current_pause_sha256=digest(pause_body) if pause_body is not None else None,
+                 current_pause=json.loads(pause_body) if pause_body is not None else None)
     saved["status"] = ("deadline_reached" if time.time() >= deadline else
                        "blocked_access" if pause_file.exists() else "stopped_requires_explicit_start")
     # Read-only inspection cannot start collection, clear a pause or rewrite saved run state.
