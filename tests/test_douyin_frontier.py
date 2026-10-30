@@ -214,6 +214,9 @@ class FrontierTests(unittest.TestCase):
             }
             self.assertEqual(families, {None, "formal-family-one", "formal-family-two"})
             self.assertEqual(frontier.ingest(source, 1)["bilibili_rows_scanned"], 0)
+            before_update_searches = frontier.db.execute(
+                "SELECT count(*) FROM tasks WHERE kind='search' AND target='甲'"
+            ).fetchone()[0]
             updated = source_record(
                 desc="原作：更新线索", observed="2026-10-29T01:00:00Z"
             )
@@ -222,9 +225,20 @@ class FrontierTests(unittest.TestCase):
             db.commit()
             db.close()
             self.assertEqual(frontier.ingest(source, 1)["observation_highwater"], 1)
+            self.assertEqual(
+                frontier.db.execute(
+                    "SELECT count(*) FROM tasks WHERE kind='search' AND target='甲'"
+                ).fetchone()[0],
+                before_update_searches + 1,
+            )
             self.assertIsNotNone(
                 frontier.db.execute(
                     "SELECT 1 FROM tasks WHERE target='更新线索'"
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                frontier.db.execute(
+                    "SELECT 1 FROM tasks WHERE target='甲' AND lane='head' AND status='pending'"
                 ).fetchone()
             )
             self.assertEqual(frontier.ingest(source, 1)["bilibili_rows_scanned"], 0)

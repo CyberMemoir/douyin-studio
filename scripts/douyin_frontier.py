@@ -185,8 +185,8 @@ class Frontier:
             publish(target, value)
         return sha
 
-    def task(self, kind, target, lane):
-        key = identity([kind, target])
+    def task(self, kind, target, lane, scope=None):
+        key = identity([kind, target] + ([scope] if scope else []))
         self.db.execute(
             "INSERT OR IGNORE INTO tasks VALUES(?,?,?,?, 'pending',NULL,NULL,NULL,?)",
             (key, kind, target, lane, time.time()),
@@ -226,7 +226,9 @@ class Frontier:
             (value["id"], revision, encoded(value).decode()),
         )
         for plan in value["plans"]:
-            key = self.task(plan["kind"], plan["target"], lane)
+            # A new saved head cue can refresh a completed query; this never retries an ambiguous key.
+            scope = revision if lane == "head" and plan["kind"] == "search" else None
+            key = self.task(plan["kind"], plan["target"], lane, scope)
             self.bind(
                 value["id"],
                 key,
@@ -234,6 +236,19 @@ class Frontier:
                 encoded(plan["proof"]).decode(),
                 "bilibili_explicit_metadata",
             )
+            if scope:
+                cached = self.db.execute(
+                    "SELECT id FROM tasks WHERE kind='search' AND target=? AND status='completed' ORDER BY created DESC,id LIMIT 1",
+                    (plan["target"],),
+                ).fetchone()
+                if cached:
+                    self.bind(
+                        value["id"],
+                        cached[0],
+                        plan["purpose"],
+                        encoded(plan["proof"]).decode(),
+                        "cached_query_before_head_refresh",
+                    )
         return 1
 
     def ingest(self, source, batch=200):
