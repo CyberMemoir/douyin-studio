@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { chromium, type Browser, type BrowserContext, type Page, type Response } from 'playwright';
 import type {
   Connection,
@@ -11,6 +12,7 @@ import type {
 } from '../shared/types.js';
 import { isCommentResponse, parseCommentPage, readCommentBody } from './comments.js';
 import { extractPayload } from './normalize.js';
+import { nativeRequest, nativeAccessIssue, parseNativePage, type NativeInput } from './native-pages.js';
 import { localCdpUrl, mediaUrl, parseVideoInput } from './validation.js';
 import type { JobContext } from './jobs.js';
 
@@ -510,6 +512,119 @@ export class DouyinBrowser {
         };
       } finally {
         captured.stop();
+      }
+    });
+  }
+
+  async nativePage(input: NativeInput, job: JobContext) {
+    const request = nativeRequest(input);
+    return this.page(job, async (page) => {
+      const access = new AbortController();
+      const observations = new Set<Promise<void>>();
+      const observe = (response: Response) => {
+        const url = new URL(response.url());
+        if (
+          !(url.hostname === 'douyin.com' || url.hostname.endsWith('.douyin.com')) ||
+          !url.pathname.startsWith('/aweme/')
+        )
+          return;
+        if ([401, 403, 412, 429, 461, 471, 567].includes(response.status())) {
+          access.abort(new Error(`读取需要人工验证或访问受限（HTTP ${response.status()}），停止访问`));
+        } else if (response.status() === 200 && url.pathname === request.path) {
+          const reading = (async () => {
+            try {
+              const body = await readCommentBody(() => response.body());
+              if (body.length > 12_000_000) return;
+              const issue = nativeAccessIssue(JSON.parse(body.toString('utf8')), input.kind);
+              if (issue) access.abort(new Error(issue));
+            } catch {
+              /* Optional navigation observation; the explicit native response is parsed strictly below. */
+            }
+          })();
+          observations.add(reading);
+          void reading.finally(() => observations.delete(reading));
+        }
+      };
+      page.on('response', observe);
+      try {
+        await page.route('**/*', (route) => {
+          const item = route.request();
+          const url = new URL(item.url());
+          return access.signal.aborted ||
+            item.resourceType() === 'media' ||
+            /\.douyinvod\.com$/.test(url.hostname) ||
+            /\.(vtt|srt|ass)(?:$|\?)/i.test(url.pathname)
+            ? route.abort()
+            : route.continue();
+        });
+        const entry =
+          input.kind === 'search_page'
+            ? `https://www.douyin.com/search/${encodeURIComponent(input.query)}?type=video`
+            : `https://www.douyin.com/video/${input.videoId}`;
+        await navigateDouyinPage(page, entry);
+        const block = await this.blocked(page);
+        if (block) throw new Error(block);
+        access.signal.throwIfAborted();
+        const verifyParent = () => {
+          if (new URL(page.url()).origin !== 'https://www.douyin.com')
+            throw new Error('Native reader page origin changed; stop before requesting');
+          if (input.kind === 'related' && resolveDetailId(entry, page.url()) !== input.videoId)
+            throw new Error('Related page parent identity mismatch');
+        };
+        verifyParent();
+        job.signal.throwIfAborted();
+        // The existing Douyin search/comment readers wait 20s before an additional page request.
+        await delay(20_000, AbortSignal.any([job.signal, access.signal]));
+        await Promise.allSettled([...observations]);
+        access.signal.throwIfAborted();
+        const lateBlock = await this.blocked(page);
+        if (lateBlock) throw new Error(lateBlock);
+        verifyParent();
+        // Ordinary same-origin browser fetch. No copied cookies, fabricated signatures or risk-control retries.
+        const response = await page.evaluate(async (request) => {
+          const result = await fetch('https://www.douyin.com' + request.path + '?' + request.query, {
+            credentials: 'include',
+            redirect: 'error',
+            cache: 'no-store',
+            signal: AbortSignal.timeout(10_000),
+          });
+          const declared = Number(result.headers.get('content-length') || 0);
+          if (declared > 12_000_000) throw new Error('Native metadata response exceeds byte budget');
+          return { status: result.status, text: await result.text() };
+        }, request);
+        verifyParent();
+        job.signal.throwIfAborted();
+        const body = Buffer.from(response.text);
+        if (body.length > 12_000_000) throw new Error('Native metadata response exceeds byte budget');
+        const bodySha = createHash('sha256').update(body).digest('hex');
+        const directory = path.join(this.dataDir, 'native-pages');
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const file = path.join(directory, bodySha + '.bin');
+        if (!fs.existsSync(file)) {
+          fs.writeFileSync(file + '.tmp', body, { mode: 0o600 });
+          fs.renameSync(file + '.tmp', file);
+        }
+        const requestSha = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+        fs.writeFileSync(
+          path.join(directory, `${bodySha}-${requestSha}.request.json`),
+          JSON.stringify({
+            request: input,
+            wireRequest: request,
+            status: response.status,
+            bodySha256: bodySha,
+          }),
+          { mode: 0o600 },
+        );
+        job.log(`原生响应证据 SHA256 ${bodySha}`);
+        if ([401, 403, 412, 429, 461, 471, 567].includes(response.status))
+          throw new Error(`读取需要人工验证或访问受限（HTTP ${response.status}），停止访问`);
+        if (response.status !== 200) throw new Error(`Native HTTP ${response.status}; no automatic retry`);
+        await Promise.allSettled([...observations]);
+        access.signal.throwIfAborted();
+        const parsed = parseNativePage(body, input, new Date().toISOString());
+        return parsed;
+      } finally {
+        page.off('response', observe);
       }
     });
   }
