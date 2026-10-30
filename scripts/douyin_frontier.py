@@ -9,6 +9,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from douyin_native_frontier import NativePages
+
 METADATA_FIELDS = (
     "id",
     "url",
@@ -19,6 +21,7 @@ METADATA_FIELDS = (
     "comments",
     "searchContext",
     "detailContext",
+    "relatedContext",
 )
 
 
@@ -142,8 +145,12 @@ def anchor(record, classification):
     }
 
 
-class Frontier:
-    def __init__(self, root):
+class Frontier(NativePages):
+    def __init__(self, root, native_pages=False, page_budget=3, related_depth=1):
+        self.native_pages = native_pages
+        self.page_budget = page_budget
+        self.related_depth = related_depth
+        self.native_changes = []
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "objects").mkdir(exist_ok=True)
@@ -168,6 +175,7 @@ class Frontier:
         CREATE TABLE IF NOT EXISTS role_assertions(id TEXT PRIMARY KEY,work TEXT,anchor TEXT,
           source INTEGER,derivative INTEGER,usage INTEGER,unknown INTEGER,record TEXT);
         """)
+        self.setup_native()
 
     def get(self, key, default=None):
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -203,10 +211,15 @@ class Frontier:
             (task_id,),
         ).fetchone()
         if inserted and done:
+            if done["kind"] in ("search_page", "related"):
+                self.native_rebind(task_id, anchor_id, purpose, proof, parent)
+                return
             for video in json.loads(done["result"]):
                 self.link(video, task_id)
                 if done["kind"] == "resolve":
                     self.expand(video, task_id)
+                    if self.native_pages:
+                        self.native_after_detail(video, task_id)
 
     def add_anchor(self, value, lane="head"):
         revision = identity(value)
@@ -228,7 +241,11 @@ class Frontier:
         for plan in value["plans"]:
             # A new saved head cue can refresh a completed query; this never retries an ambiguous key.
             scope = revision if lane == "head" and plan["kind"] == "search" else None
-            key = self.task(plan["kind"], plan["target"], lane, scope)
+            key = (
+                self.native_open("search_page", plan["target"], lane, scope)
+                if self.native_pages and plan["kind"] == "search"
+                else self.task(plan["kind"], plan["target"], lane, scope)
+            )
             self.bind(
                 value["id"],
                 key,
@@ -238,7 +255,7 @@ class Frontier:
             )
             if scope:
                 cached = self.db.execute(
-                    "SELECT id FROM tasks WHERE kind='search' AND target=? AND status='completed' ORDER BY created DESC,id LIMIT 1",
+                    "SELECT id FROM tasks WHERE kind IN ('search','search_page') AND target=? AND status='completed' ORDER BY created DESC,id LIMIT 1",
                     (plan["target"],),
                 ).fetchone()
                 if cached:
@@ -402,7 +419,7 @@ class Frontier:
         for current in (lane, "history" if lane == "head" else "head"):
             row = self.db.execute(
                 "SELECT * FROM tasks WHERE lane=? AND status IN ('pending','inflight','submission_unknown') "
-                "ORDER BY CASE kind WHEN 'resolve' THEN 0 ELSE 1 END,created,id LIMIT 1",
+                "ORDER BY CASE WHEN kind='resolve' AND EXISTS(SELECT 1 FROM paths WHERE task=tasks.id AND parent='bilibili_explicit_metadata') THEN 0 ELSE 1 END,created,id LIMIT 1",
                 (current,),
             ).fetchone()
             if row:
@@ -451,6 +468,11 @@ class Frontier:
                 "UPDATE tasks SET status=?,reason=? WHERE id=?",
                 (state, error or job["status"], task["id"]),
             )
+            if task["kind"] in ("search_page", "related"):
+                self.db.execute(
+                    "UPDATE native_streams SET status=?,reason=? WHERE id=(SELECT stream FROM native_inputs WHERE task=?)",
+                    (state, error or job["status"], task["id"]),
+                )
             if blocked:
                 self.set(
                     "access_pause",
@@ -459,6 +481,9 @@ class Frontier:
             stats[
                 "blocked" if blocked else "unavailable" if unavailable else "failed"
             ] += 1
+            return
+        if task["kind"] in ("search_page", "related"):
+            self.native_apply(task, job, stats)
             return
         detail = task["kind"] == "resolve"
         if job["type"] != ("resolve" if detail else "search"):
@@ -485,6 +510,8 @@ class Frontier:
             self.link(video, task["id"])
             if detail:
                 self.expand(video, task["id"])
+                if self.native_pages:
+                    self.native_after_detail(video, task["id"])
         stats["detail_results" if detail else "search_cards"] += len(clean)
         stats["no_match"] += int(not clean)
         self.db.execute(
@@ -598,6 +625,7 @@ class Frontier:
                 "submitted_reader_jobs",
                 "recovered_jobs",
                 "search_cards",
+                "related_cards",
                 "detail_results",
                 "new_unique_cards",
                 "new_unique_details",
@@ -610,6 +638,16 @@ class Frontier:
             )
         }
         status = "budget"
+        self.native_changes = []
+        if (
+            self.native_pages
+            and not Path(stop_file).exists()
+            and not Path(pause_file).exists()
+            and not self.get("access_pause")
+            and time.time() < deadline
+        ):
+            with self.db:
+                self.native_resume_budgets()
         for _ in range(budget):
             if Path(stop_file).exists():
                 status = "stopped"
@@ -625,6 +663,7 @@ class Frontier:
             if not task:
                 status = "idle"
                 break
+            task = self.native_input(task)
             try:
                 if task["status"] in ("inflight", "submission_unknown"):
                     job = transport.recover(task)
@@ -714,10 +753,17 @@ class Frontier:
                 "real_network_requests": 0 if transport.mode == "replay" else None,
                 "reader_job_budget": budget,
                 "native_cursor": None,
-                "native_search_cursor": "unsupported",
-                "related_reader": "unsupported",
+                "native_search_cursor": "implemented_public_contract_live_unverified"
+                if self.native_pages
+                else "unsupported",
+                "related_reader": "implemented_public_contract_live_unverified"
+                if self.native_pages
+                else "unsupported",
+                "native_page_changes": self.native_changes,
                 "rounds_without_new_details": stagnant,
-                "entry_exhaustion": "native_unknown_bounded_ui_only",
+                "entry_exhaustion": "per_stream_native_state"
+                if self.native_pages
+                else "native_unknown_bounded_ui_only",
                 "frontier": dict(
                     self.db.execute(
                         "SELECT status,count(*) FROM tasks GROUP BY status"

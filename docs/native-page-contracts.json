@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "basis": "public_client_source_and_reported_failure_response",
+  "own_successful_native_capture": false,
+  "live_verified": false,
+  "sources": [
+    {
+      "repository": "Johnserf-Seed/f2",
+      "revision": "7dab3e2ffffaa2535834d28fca99dbc2e89fa9d3",
+      "files": ["f2/apps/douyin/api.py", "f2/apps/douyin/model.py", "f2/apps/douyin/filter.py"],
+      "verified_facts": [
+        "general search and related paths",
+        "offset/count/search_id request fields",
+        "related aweme_id/count/filterGids",
+        "related aweme_list and has_more via UserPostFilter"
+      ]
+    },
+    {
+      "repository": "NanmiCoder/MediaCrawler",
+      "revision": "68d9ef1c1da22eab75940dfd7cec259907006538",
+      "files": ["media_platform/douyin/client.py", "media_platform/douyin/core.py"],
+      "verified_facts": [
+        "general search request offset/count/search_id",
+        "data[].aweme_info",
+        "extra.logid retained as next search_id"
+      ],
+      "usage": "protocol facts only; no code/dependency/license backbone reuse"
+    },
+    {
+      "repository": "mafqla/douyin-api",
+      "revision": "42987a1aa0c88c4d7f00d106ea2bc87dc01b0edf",
+      "files": ["api/search.py", "api/video.py"],
+      "verified_facts": ["general search offset/count", "related aweme_id/filterGids"],
+      "disagreement": "optional sub_channel_id/awemePcRecRawData/refresh_index differ from other clients; not invented here"
+    }
+  ],
+  "reported_response": {
+    "url": "https://github.com/NanmiCoder/MediaCrawler/issues/358",
+    "date": "2024-07-25",
+    "basis": "third_party_report_not_our_packet_capture",
+    "verified_facts": [
+      "root cursor and has_more",
+      "status_code=0/data=[] can coexist with search_nil_info.verify_check"
+    ]
+  },
+  "still_needs_live_evidence": [
+    "current successful signed/session-valid browser requests for both endpoints",
+    "current successful general search and related raw response bodies",
+    "any required fresh website SDK parameters or headers absent from ordinary browser fetch",
+    "optional related request fields where public clients disagree",
+    "mixed/ad/search row variants currently counted as unparsed and stopped"
+  ]
+}

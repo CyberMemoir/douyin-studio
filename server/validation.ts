@@ -6,6 +6,17 @@ export const searchSchema = z.object({
   limit: z.number().int().min(1).max(50).default(20),
   maxScrolls: z.number().int().min(0).max(2).default(2),
 });
+export const nativeSearchSchema = z.object({
+  query: z.string().trim().min(1).max(400),
+  cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  searchId: z.string().max(200),
+  count: z.number().int().min(1).max(50),
+});
+export const relatedSchema = z.object({
+  videoId: z.string().regex(/^\d{8,30}$/),
+  excludedIds: z.array(z.string().regex(/^\d{8,30}$/)).max(1000),
+  count: z.number().int().min(1).max(50),
+});
 export const downloadSchema = z.object({
   ids: z
     .array(z.string().regex(/^\d{8,30}$/))

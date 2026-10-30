@@ -25,6 +25,7 @@ export type Video = {
     keywordMatches: boolean | null;
     observedAt: string;
   };
+  relatedContext?: { parentVideoId: string; responsePath: string; bodySha256: string; observedAt: string };
 };
 
 export type SubtitleTrack = { url: string; language: string; label: string; kind: string };
@@ -78,7 +79,8 @@ export type CommentCollection = {
   endReason: 'entry_exhausted' | 'limit' | 'scroll_budget' | 'no_new_page';
   coverage: 'bounded_top_level_comments';
 };
-export type JobType = 'search' | 'resolve' | 'trends' | 'comments' | 'download' | 'login' | 'check';
+export type JobType =
+  'search' | 'search_page' | 'related' | 'resolve' | 'trends' | 'comments' | 'download' | 'login' | 'check';
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type Job = {
   id: string;
@@ -103,6 +105,7 @@ export type Job = {
     fetchedAt?: string;
     note?: string;
     commentCollection?: CommentCollection;
+    nativePage?: import('./native-pages.js').NativePage;
   };
 };
 export type Snapshot = { jobs: Job[]; trends: Trend[]; trendsAt: string | null; connection: Connection };

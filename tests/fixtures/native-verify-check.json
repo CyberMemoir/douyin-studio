@@ -1,0 +1,14 @@
+{
+  "provenance": {
+    "url": "https://github.com/NanmiCoder/MediaCrawler/issues/358",
+    "basis": "minimal_redacted_projection_of_reported_2024_response_not_our_capture",
+    "redacted": ["query", "log identifiers", "unrelated configuration"]
+  },
+  "response": {
+    "status_code": 0,
+    "data": [],
+    "cursor": 65,
+    "has_more": 0,
+    "search_nil_info": { "search_nil_type": "verify_check", "search_nil_item": "verify_check" }
+  }
+}

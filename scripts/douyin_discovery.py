@@ -21,7 +21,16 @@ class Replay:
         self.frames = json.loads(Path(file).read_text(encoding="utf-8"))["jobs"]
 
     def submit(self, task):
-        frame = self.frames[task["kind"] + ":" + task["target"]]
+        frame_key = (
+            task["kind"]
+            + ":"
+            + (
+                encoded(task["native_input"]).decode()
+                if "native_input" in task
+                else task["target"]
+            )
+        )
+        frame = self.frames[frame_key]
         job = {
             **{key: frame.get(key) for key in ("id", "type", "status", "error")},
             "idempotencyKey": task["id"],
@@ -33,6 +42,8 @@ class Replay:
                 ]
             },
         }
+        if "nativePage" in frame.get("result", {}):
+            job["result"]["nativePage"] = frame["result"]["nativePage"]
         with self.frontier.db:
             self.frontier.set("replay_receipt:" + task["id"], job)
         return job
@@ -81,6 +92,17 @@ class Studio:
             ) from error
 
     def submit(self, task):
+        if "native_input" in task:
+            route = "search/page" if task["kind"] == "search_page" else "related"
+            return self.request(
+                route,
+                {
+                    key: value
+                    for key, value in task["native_input"].items()
+                    if key != "kind"
+                },
+                task["id"],
+            )
         # Same real Studio API handles canonical URLs as resolve; no guessed upstream endpoint.
         return self.request(
             "search", {"query": task["target"], "limit": 8, "maxScrolls": 2}, task["id"]
@@ -167,7 +189,19 @@ def main():
     signal.signal(signal.SIGTERM, request_stop)
     frontier = None
     try:
-        frontier = Frontier(root)
+        protocol = config.get("reader_protocol", "bounded_ui")
+        if (
+            protocol not in ("bounded_ui", "native_pages")
+            or not 1 <= config.get("max_pages_per_stream", 3) <= 20
+            or not 0 <= config.get("related_depth", 1) <= 3
+        ):
+            raise ValueError("Invalid reader protocol/page/depth budget")
+        frontier = Frontier(
+            root,
+            protocol == "native_pages",
+            config.get("max_pages_per_stream", 3),
+            config.get("related_depth", 1),
+        )
         saved_mode = frontier.get("transport_mode")
         if saved_mode is None:
             previous = frontier.db.execute(

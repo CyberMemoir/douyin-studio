@@ -5,7 +5,16 @@ import { publicVideo, type Connection } from '../shared/types.js';
 import { DouyinBrowser } from './browser.js';
 import { JobQueue } from './jobs.js';
 import { Store } from './store.js';
-import { searchSchema, downloadSchema, commentsSchema, parseVideoInput, localFile } from './validation.js';
+import {
+  searchSchema,
+  nativeSearchSchema,
+  relatedSchema,
+  downloadSchema,
+  commentsSchema,
+  parseVideoInput,
+  localFile,
+} from './validation.js';
+import type { NativeInput } from './native-pages.js';
 import { saveVideo } from './download.js';
 import { keyedJob, RequestConflict } from './idempotency.js';
 
@@ -129,6 +138,27 @@ export function createApp(store: Store, browser: DouyinBrowser, queue: JobQueue)
     await store.flush();
     res.status(202).json(job);
   });
+  for (const kind of ['search_page', 'related'] as const) {
+    app.post(kind === 'search_page' ? '/api/search/page' : '/api/related', async (req, res) => {
+      const input: NativeInput =
+        kind === 'search_page'
+          ? { kind, ...nativeSearchSchema.parse(req.body) }
+          : { kind, ...relatedSchema.parse(req.body) };
+      const job = keyedJob(store, req.get('Idempotency-Key'), kind, input, () =>
+        queue.enqueue(
+          kind,
+          input.kind === 'search_page' ? `原生搜索页：${input.query}` : '读取作品相关推荐',
+          async (ctx) => {
+            const result = await browser.nativePage(input, ctx);
+            store.addVideos(result.videos);
+            ctx.update({ result: { videos: result.videos.map(publicVideo), nativePage: result.nativePage } });
+          },
+        ),
+      );
+      await store.flush();
+      res.status(202).json(job);
+    });
+  }
   app.post('/api/trends', async (req, res) => {
     const existing = store.jobs.find((j) => j.type === 'trends' && ['queued', 'running'].includes(j.status));
     if (existing && !req.get('Idempotency-Key')) {
